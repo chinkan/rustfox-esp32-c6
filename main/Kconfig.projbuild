@@ -1,0 +1,86 @@
+menu "RustFox ESP32-C6"
+
+config RUSTFOX_WIFI_SSID
+    string "Wi-Fi SSID"
+    default ""
+    help
+        Station SSID. Leave empty to boot the face only and skip the network.
+
+config RUSTFOX_WIFI_PASSWORD
+    string "Wi-Fi password"
+    default ""
+    help
+        Empty password joins an open network. Do not commit sdkconfig.
+
+config RUSTFOX_WS_URI
+    string "Device WebSocket URI"
+    default "ws://192.168.1.10:8080/api/device/v1/ws"
+    help
+        Must include /api/device/v1/ws. Use ws:// on loopback, Tailscale, or a
+        trusted LAN. Use wss:// when TLS terminates at a reverse proxy.
+        Bare public WebSocket is not recommended.
+
+choice RUSTFOX_AUTH_MODE
+    prompt "Device token transport"
+    default RUSTFOX_AUTH_HEADER
+    help
+        ADR-0056 accepts an Authorization header or a first text frame.
+
+config RUSTFOX_AUTH_HEADER
+    bool "Authorization: Bearer header"
+
+config RUSTFOX_AUTH_FIRST_FRAME
+    bool "First text frame type=auth"
+endchoice
+
+config RUSTFOX_DEVICE_TOKEN
+    string "Device token"
+    default ""
+    help
+        Plaintext from Portal Settings → Devices. This is not the portal
+        login token. Leave empty to skip the socket. Never commit sdkconfig.
+
+config RUSTFOX_DEVICE_ID
+    string "device_hello device_id"
+    default "esp32-c6-amoled-2.16"
+
+config RUSTFOX_ROOM
+    string "device_hello room"
+    default ""
+
+config RUSTFOX_FW_VERSION
+    string "Firmware version in device_hello"
+    default "0.1.0"
+
+config RUSTFOX_CANNED_TEXT
+    string "Canned user_text"
+    default "hello from the esp32-c6"
+    help
+        v0 stand-in for off-device ASR. Also sent by the BOOT button.
+
+config RUSTFOX_SEND_CANNED_ON_CONNECT
+    bool "Send canned user_text once after device_hello is acked"
+    default y
+    help
+        Skipped when a manual line is already waiting.
+
+config RUSTFOX_BOOT_BUTTON_SENDS_TEXT
+    bool "BOOT button (GPIO9) sends canned user_text"
+    default y
+
+config RUSTFOX_UART_TEXT
+    bool "Lines typed in the serial monitor are user_text"
+    default y
+
+config RUSTFOX_PING_INTERVAL_MS
+    int "JSON ping interval (ms)"
+    default 30000
+    range 5000 120000
+
+config RUSTFOX_ENABLE_PANEL
+    bool "Bring up the QSPI AMOLED and draw the fox"
+    default y
+    help
+        If the PMIC or panel does not answer, the WebSocket client still runs.
+
+endmenu

@@ -1,0 +1,7 @@
+# RustFox ESP32-C6 client v0. Secrets stay in sdkconfig (gitignored), not here.
+CONFIG_IDF_TARGET="esp32c6"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# wss:// (TLS terminated in front of RustFox) uses the bundled CA store.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
