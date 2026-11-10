@@ -1,0 +1,21 @@
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "face_view.c"
+        "board_panel.c"
+        "wifi_sta.c"
+        "device_link.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_websocket_client
+        esp_lcd
+        esp_lcd_sh8601
+        driver
+        mbedtls
+        rf_frames
+        rf_face
+)
