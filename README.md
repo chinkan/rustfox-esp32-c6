@@ -1,23 +1,33 @@
-# RustFox ESP32-C6 client (v0)
+# RustFox ESP32-C6 firmware for the Waveshare ESP32-C6-Touch-AMOLED-2.16
 
-Firmware prototype for the Waveshare **ESP32-C6-Touch-AMOLED-2.16**. It speaks
-the RustFox **Device WebSocket** from ADR-0056: JSON text frames on
-`GET /api/device/v1/ws`, then draws a small fox face on the AMOLED.
+ESP-IDF firmware for the [Waveshare ESP32-C6-Touch-AMOLED-2.16](https://www.waveshare.com/esp32-c6-touch-amoled-2.16.htm). It runs on the ESP32-C6 and drives the board's 2.16-inch 480×480 AMOLED. This repository is the v0 [RustFox](https://github.com/chinkan/RustFox) Device WebSocket client: it joins Wi-Fi, exchanges JSON text frames on `GET /api/device/v1/ws`, and draws a procedural fox face on the panel.
 
-This tree is the device client. It is **not** part of the RustFox monorepo.
-Shipping it, or not shipping it, does **not** block the RustFox **v1.0.9**
-tag. v0 is not a git tag.
+## What this client does
 
-The v0 path is Kan path B, narrowed for this chip:
+[RustFox](https://github.com/chinkan/RustFox) is the self-hosted assistant. This firmware lives in this repository. It is not part of the RustFox monorepo.
 
-- On-board capture and wake stay conceptual. Microphone pins are recorded and
-  the codecs are not started.
-- Speech-to-text is off the device. The ESP32-C6 on this board has **no
-  PSRAM** (512 KB HP SRAM), so there is no on-board open-vocabulary STT.
-- A turn is a `user_text` frame. v0 sends a canned line, the BOOT button, or
-  a line typed into the serial monitor.
-- Xiaozhi cloud, Opus, and binary audio frames are not implemented. TTS is
-  later work.
+With a Wi-Fi network and a device token, the board opens the Device WebSocket on your RustFox instance, sends text, and shows the assistant reply on the fox face. You send text with a canned line, the BOOT button, or a line typed in the serial monitor. Speech-to-text runs on the RustFox host, not on the device.
+
+## Features
+
+### Current
+
+- Wi-Fi station mode.
+- JSON text frames on `GET /api/device/v1/ws`.
+- Device token in an `Authorization: Bearer` header, or in a first `auth` text frame.
+- `device_hello`, `user_text`, JSON `ping`, and `assistant_text`.
+- Canned `user_text`, the BOOT button on GPIO9, and lines from `idf.py monitor`.
+- A 96×96 procedural fox face, blitted to the panel in 16-line stripes.
+- QSPI AMOLED bring-up through the AXP2101 power-management chip.
+- Host tests for the JSON frames and the fox face (`make -C tests/host test`).
+
+### Planned
+
+These items are follow-up work. They are not in this tree:
+
+- A full-screen official logo.
+- Touch.
+- Press-and-hold talk.
 
 ## Hardware
 
@@ -31,74 +41,113 @@ The v0 path is Kan path B, narrowed for this chip:
 | PMIC | AXP2101 at I2C `0x34` |
 | Buttons | BOOT on GPIO9 |
 
-The pin map, the AXP2101 sequence that powers the panel, and the QSPI init
-commands are adapted from the MIT firmware
-[78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)
-`main/boards/waveshare/esp32-c6-touch-amoled-2.16/`
-(revision `a73e9a7e266e3196d1368ba46c30bee0d81f0a64`). See
-`THIRD_PARTY_NOTICES.md`. Waveshare's own SDK samples are not copied: those
-trees do not ship an SPDX header.
+Pin assignments are in `main/board_pins.h`. GPIO12 and GPIO13 are USB D− and D+ and are left unused. The partition table in `partitions.csv` gives the factory app 4 MB of the 16 MB flash. The rest of the flash is unused.
 
-GPIO12 and GPIO13 are USB D−/D+ and are left alone.
+The pin map, the AXP2101 sequence that powers the panel, and the QSPI init commands are adapted from the MIT firmware [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) `main/boards/waveshare/esp32-c6-touch-amoled-2.16/` (revision `a73e9a7e266e3196d1368ba46c30bee0d81f0a64`). See `THIRD_PARTY_NOTICES.md`.
 
-## Bring-up
+### Panel and memory
 
-ESP-IDF **5.4 or newer**. A host build with **ESP-IDF 5.5.1** links
-`build/rustfox_esp32_c6.bin` (245 KiB) for the 16 MB flash map. That
-image was not flashed. Install the `esp32c6` tools, then:
+**No PSRAM.** 512 KB of HP SRAM is shared with Wi-Fi. The fox is blitted in 16-line stripes. A full 480×480 RGB565 framebuffer is about 450 KB, and this firmware does not allocate one. The QSPI bus max transfer is one stripe, `480 × 16 × 2` bytes.
+
+**Controller names.** The Waveshare product page calls the glass CO5300 and the touch chip CST9220. This firmware initializes the panel with the SH8601 QSPI command set from `espressif/esp_lcd_sh8601` (Apache-2.0), the same command set as the Xiaozhi board file. That board file names the touch chip CST9217. Touch is left off. See [Planned](#planned).
+
+**Address window.** Column and page commands `0x2A` and `0x2B` are programmed as `0x0000`–`0x01DF` on both axes (480 pixels). Command `0x36` (MADCTL) is `0xA0`. The panel config uses RGB element order. The Xiaozhi init table this sequence comes from programs a 410×502 window (2.06-inch geometry) while its `config.h` names 480×480. This firmware uses the 480×480 window.
+
+**Panel power.** The glass is powered by toggling AXP2101 ALDO3 at I2C `0x34`, using the same sequence as the Xiaozhi board file. If `0x34` does not acknowledge, panel setup stops and the WebSocket client still runs.
+
+## Prerequisites
+
+- This Waveshare board, and a RustFox instance the board can reach.
+- ESP-IDF 5.4 or newer, with the `esp32c6` tools installed. `main/idf_component.yml` requires `idf >= 5.4.0`. A host build with ESP-IDF 5.5.1 links `build/rustfox_esp32_c6.bin` (245 KiB) for the 16 MB flash map in `sdkconfig.defaults`.
+- A C compiler and `make`, if you want the host tests. Those tests do not need ESP-IDF or the board.
+
+`scripts/idf-build.sh` looks for ESP-IDF at `$IDF_PATH`, or at `$HOME/esp/esp-idf` when `IDF_PATH` is unset. If `export.sh` is missing there, the script tells you to clone a 5.5 release and run `./install.sh esp32c6`.
+
+## Configure, build, flash, and monitor
+
+### Enable Device WebSocket on RustFox
+
+In the RustFox configuration, set:
+
+```toml
+[device_ws]
+enabled = true
+```
+
+The socket uses the same bind address and port as the portal. The option defaults to off. Create a device under **Settings → Devices** and copy the plaintext device token. The portal shows that token once, when you create or rotate it. Revoke or rotate the token there. The copy this firmware uses lives in `sdkconfig` on your build machine.
+
+Use `ws://` on loopback, Tailscale, or a trusted LAN. Use `wss://` when TLS terminates at a reverse proxy in front of RustFox. RustFox does not terminate TLS. A bare public WebSocket is not recommended. `sdkconfig.defaults` sets `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE` so a `wss://` URI can use the bundled CA store.
+
+### Configure the firmware
+
+From the root of this repository:
 
 ```bash
 . $HOME/esp/esp-idf/export.sh
 idf.py set-target esp32c6
 idf.py menuconfig
-idf.py build flash monitor
 ```
 
-`scripts/idf-build.sh` runs `set-target` and `build` when `IDF_PATH` (default
-`$HOME/esp/esp-idf`) is already installed.
+When ESP-IDF is installed somewhere else, set `IDF_PATH` and source `$IDF_PATH/export.sh` instead.
 
 Menu path: **RustFox ESP32-C6**.
 
 | Setting | Role |
 | --- | --- |
-| Wi-Fi SSID / password | Station join. Empty SSID boots the face and does not open the socket. An empty password joins an open network. |
+| Wi-Fi SSID / password | Station join. An empty SSID boots the face and skips the network. An empty password joins an open network. |
 | Device WebSocket URI | Full URI, including `/api/device/v1/ws`. Default `ws://192.168.1.10:8080/api/device/v1/ws`. |
 | Device token transport | `Authorization: Bearer` (default) or a first text frame `{"type":"auth","token":"..."}`. |
-| Device token | Portal **Settings → Devices** plaintext. Not the portal login token. Empty skips the socket. |
+| Device token | Plaintext from portal **Settings → Devices**. This is the device token, not the portal login token. An empty token skips the socket. |
 | device_id / room | Optional `device_hello` fields. Defaults: `esp32-c6-amoled-2.16` and an empty room. |
 | Firmware version | Sent as `fw_version`. Default `0.1.0`. |
-| Canned user_text | Stand-in for off-device ASR. Default `hello from the esp32-c6`. |
-| Send canned on connect | One `user_text` after `device_hello` is acked, unless a typed line is already waiting. |
-| BOOT button | GPIO9 sends the canned line. |
-| Serial lines | A line typed into `idf.py monitor` is `user_text`. |
-| JSON ping interval | Default 30 s, after auth. |
-| QSPI panel | On by default. If the PMIC or the glass does not answer, the socket still runs. |
+| Canned user_text | Default `hello from the esp32-c6`. Also sent by the BOOT button. |
+| Send canned on connect | On by default. One `user_text` after `device_hello` is acknowledged, unless a typed line is already waiting. |
+| BOOT button | On by default. GPIO9 sends the canned line. |
+| Serial lines | On by default. A line typed into `idf.py monitor` is `user_text`. |
+| JSON ping interval | Default 30000 ms (30 seconds), after authentication. Range 5000–120000 ms. |
+| QSPI panel | On by default. If the PMIC or the panel does not answer, the socket still runs. |
 
-`sdkconfig` holds the SSID, password, and token. It is gitignored. Do not
-commit it. The token is not written to the log.
+`sdkconfig` holds the SSID, the password, and the device token. `.gitignore` lists `sdkconfig` and `sdkconfig.old`. Do not commit them. The log records the token length and leaves the token itself out.
 
-On the RustFox side, `[device_ws] enabled = true`. The socket shares the
-portal bind and port. Create a device under Settings → Devices and paste that
-token here. Revoke or rotate it there; this firmware has no token store of
-its own.
+Put your RustFox host in the URI and keep the path `/api/device/v1/ws`. The default host `192.168.1.10` and port `8080` are only a starting point.
 
-Host checks (no IDF, no hardware):
+### Build, flash, and monitor
+
+```bash
+idf.py build flash monitor
+```
+
+Pass `-p` with the board's serial device if `idf.py` does not select it. `scripts/idf-build.sh` runs `idf.py set-target esp32c6` and `idf.py build` only. It does not flash or open the monitor.
+
+After the board joins Wi-Fi, the log shows the socket connecting, a `device_ack`, and `device_hello sent`. `assistant_text` is printed when RustFox replies. The fox blinks on the glass when the panel comes up.
+
+### Send text
+
+- Press BOOT (GPIO9) to send the canned line.
+- Type a line in the `idf.py monitor` console and press Enter to send that line as `user_text`.
+
+A line longer than 383 bytes is dropped. If a typed line is already waiting when `device_hello` is acknowledged, the canned line is skipped.
+
+### Run the host tests
 
 ```bash
 make -C tests/host test
 ```
 
-## Frame table
+The tests compile `components/rf_frames` and `components/rf_face` on the host. GitHub Actions runs the same command on every push and pull request.
 
-Normative detail, error codes, and the connect sequence are in
-[docs/device-ws.md](docs/device-ws.md).
+## Protocol
+
+Full frame fields, error codes, and the connect sequence are in [docs/device-ws.md](docs/device-ws.md). Server behavior lives in `src/device_ws.rs` in the [RustFox](https://github.com/chinkan/RustFox) repository.
+
+Each WebSocket message is one JSON text frame. This client ignores binary frames. The server rejects those with `error` / `bad_frame`.
 
 | Direction | `type` | Fields | Role |
 | --- | --- | --- | --- |
 | Client → server | `auth` | `token` | Only when the Bearer header was not sent |
-| Client → server | `user_text` | `text` | Required for a turn |
-| Client → server | `ping` | — | Optional |
-| Client → server | `device_hello` | `device_id`, optional `room`, `fw_version` | Optional. Sent after auth |
+| Client → server | `user_text` | `text` | Starts a turn |
+| Client → server | `ping` | — | Optional keepalive |
+| Client → server | `device_hello` | `device_id`, optional `room`, `fw_version` | Optional. Sent after authentication |
 | Server → client | `assistant_text` | `text` | One or more replies |
 | Server → client | `device_ack` | `status`, `device_id`, optional `room` | `authenticated`, `hello`, or `queued` |
 | Server → client | `pong` | — | Reply to JSON `ping` |
@@ -112,64 +161,47 @@ Normative detail, error codes, and the connect sequence are in
 {"type":"assistant_text","text":"done"}
 ```
 
-A wrong Bearer token fails the HTTP upgrade with **401**. The client then
-stops reconnecting and holds a worried face.
+What the client sends:
+
+1. Connect.
+2. With the Bearer header (the default), wait for `device_ack` / `authenticated`. With first-frame auth, send `auth`, then wait for the same acknowledgement.
+3. Send `device_hello` (`device_id`, optional `room`, `fw_version`, default `0.1.0`).
+4. On `device_ack` / `hello`, send one canned `user_text` when that option is on and no typed line is waiting.
+5. BOOT (GPIO9) or a line from the serial monitor sends another `user_text`.
+6. Log `assistant_text` and map a few substrings onto the fox face.
+
+JSON `ping` is separate from WebSocket protocol ping and pong. This client sends a JSON `ping` on the menu interval after authentication. The default is 30 seconds.
+
+A wrong or revoked Bearer token fails the HTTP upgrade with status **401**. There is no JSON body on that failure. The client stops reconnecting and holds a worried face. An `error` frame with code `unauthorized` does the same. Other error codes and the face each one selects are listed in [docs/device-ws.md](docs/device-ws.md).
 
 ## Fox face
 
-`components/rf_face` is the on-device face: ears, eyes, a blink every 3.2 s
-(held 140 ms), and a mouth that follows the emotion. The panel path blits a
-**96×96** RGB565 sprite in 16-line stripes. There is no 480×480 framebuffer
-(that alone is about 450 KB).
+`components/rf_face` draws the on-device face: ears, eyes, a blink every 3.2 seconds (held 140 ms), and a mouth that follows the emotion. The panel code blits a **96×96** RGB565 sprite in 16-line stripes, centered on the 480×480 panel. There is no 480×480 framebuffer.
 
-The serial log prints an ASCII fox when the emotion changes. Assistant text
-is matched with a short substring list (English and a few Cantonese/Chinese
-phrases). Anything else stays neutral. That map is a stub, not a sentiment
-model.
+Emotions are `neutral`, `happy`, `sad`, `surprised`, `worried`, `sleepy`, `thinking`, and `angry`. The serial log prints an ASCII fox when the emotion changes. Assistant text is matched with a short substring list (English and a few Cantonese and Chinese phrases). Any other text stays neutral.
 
-The MIT widget [0015/lvgl_kawaii_face](https://github.com/0015/lvgl_kawaii_face)
-is vendored under `third_party/lvgl_kawaii_face/` and **not linked**. Its
-canvases are sized to the parent; a full-panel canvas does not fit next to
-Wi-Fi. Emotion names overlap that widget (`neutral`, `happy`, `sad`,
-`surprised`, `angry`, `sleepy`, `worried`). Xiaozhi's default emoji set for
-this board is Twemoji, which is CC-BY-4.0 and is not vendored.
+The MIT widget [0015/lvgl_kawaii_face](https://github.com/0015/lvgl_kawaii_face) is vendored under `third_party/lvgl_kawaii_face/` and is not linked. Its canvases are sized to the parent, and a full-panel canvas does not fit beside Wi-Fi. Emotion names overlap that widget where both define them (`neutral`, `happy`, `sad`, `surprised`, `angry`, `sleepy`, `worried`). The Xiaozhi sample for this board uses Twemoji, which is CC-BY-4.0. Twemoji is not vendored here.
 
-## What v0 does not do
+## Current limits
 
-- Block or retag RustFox v1.0.9
-- Live inside the RustFox monorepo
-- Xiaozhi cloud, Opus, or any binary Device WS audio
-- Telegram voice capture or playback
-- On-device open-vocabulary STT, wake-word models, or TTS
-- Touch (the product page names CST9220; the MIT board file uses CST9217)
+- Speech-to-text runs on the RustFox host, not on the device. This ESP32-C6 board has no PSRAM (512 KB HP SRAM), so the firmware has no on-device speech-to-text and no wake-word model.
+- Microphone pins are recorded in `main/board_pins.h` (ES8311 playback and ES7210 capture on the shared I2C bus). I2S and the codecs stay off. This firmware leaves the microphone and TTS unused.
+- Touch stays off. See [Planned](#planned).
+- Display updates are 16-line stripes. The face sprite is 96×96.
+- Incoming text frames larger than 8 KiB are dropped. The log and the face keep 1023 bytes of `text`. RustFox accepts a frame up to 256 KiB and a `user_text` of up to 16000 Unicode scalars. A monitor line longer than 383 bytes is dropped.
+- This client sends JSON text frames. It ignores binary frames.
 
 ## License
 
 MIT. Copyright (c) 2026 chinkan.ai. See `LICENSE` and `THIRD_PARTY_NOTICES.md`.
 
-## Bring-up blockers
+Pin assignments, the AXP2101 register sequence that powers the panel, and the QSPI init command list (except the column and page window, which this firmware sets to 480×480) are adapted from [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) `main/boards/waveshare/esp32-c6-touch-amoled-2.16/` revision `a73e9a7e266e3196d1368ba46c30bee0d81f0a64` (MIT). Copyright (c) 2025 Shenzhen Xinzhi Future Technology Co., Ltd. Copyright (c) 2025 Project Contributors. Xiaozhi cloud transport, Opus, and audio pipeline code are not included.
 
-These are open until the image is on a board. The host frame and face tests
-do not need the glass.
+`third_party/lvgl_kawaii_face/` is an unmodified copy of [0015/lvgl_kawaii_face](https://github.com/0015/lvgl_kawaii_face) at commit `d58e1c8f8e7baa7bc93d5ae0dc18affee7f3ccbb` (MIT, Copyright (c) 2026 Eric Nam). It is not compiled into the image.
 
-1. **No PSRAM.** 512 KB HP SRAM is shared with Wi-Fi. v0 never allocates a
-   full-frame buffer. Xiaozhi's display object sets a QSPI max transfer of
-   `480×480×2`, which does not fit here; v0 caps the transfer at a 16-line
-   stripe.
-2. **Controller names disagree.** The Waveshare page calls the glass CO5300
-   and the touch chip CST9220. The MIT Xiaozhi board file drives an SH8601
-   QSPI command set (Apache-2.0 `espressif/esp_lcd_sh8601`) and CST9217.
-   v0 follows that SH8601 command set and does not start touch.
-3. **Address window.** That MIT init table programs `0x2A/0x2B` as a
-   410×502 window (the 2.06" geometry) while `config.h` says 480×480. v0
-   programs `0x0000`–`0x01DF` on both axes and keeps MADCTL `0x36 = 0xA0`.
-   The bench has to confirm the window, the color order, and the MADCTL.
-4. **Panel power.** The glass is powered by toggling AXP2101 ALDO3 the way
-   the MIT board file does. If `0x34` does not ACK, the panel path is skipped
-   and the socket still runs. Colors and brightness are unverified.
-5. **Assistant text cap.** Frames larger than 8 KiB are dropped. The face and
-   the log keep 1023 bytes of `text`. The server allows up to 256 KiB and
-   16000 scalars of `user_text`; v0 manual lines are capped at 383 bytes.
-6. **Not flashed.** ESP-IDF 5.5.1 `idf.py build` succeeds. Confirm on the
-   board: Wi-Fi join, `device_ack`, one `user_text`, one `assistant_text`,
-   and a blink on the glass.
+The ESP-IDF component manager downloads these at build time from `main/idf_component.yml`. They are not vendored:
+
+- `espressif/esp_websocket_client` 1.8.0 (Apache-2.0)
+- `espressif/esp_lcd_sh8601` 2.0.1 (Apache-2.0)
+
+ESP-IDF itself is Apache-2.0 and is not vendored. Waveshare's own SDK samples are not copied: those trees do not ship an SPDX header.
