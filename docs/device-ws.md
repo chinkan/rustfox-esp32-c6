@@ -57,6 +57,7 @@ transport` can switch to the first frame. The token is not printed.
 | Client → server | `ping` | none | Optional keepalive. This client sends one every 30 s after auth |
 | Client → server | `device_hello` | `device_id`, optional `room`, optional `fw_version` | Optional. Sent after `authenticated` |
 | Server → client | `assistant_text` | `text` | One frame per reply string. A turn may send several |
+| Server → client | `assistant_audio` | `id`, `url`, `sample_rate`, `channels`, `encoding` | PCM for this device is ready. Play only 16000 Hz, 1 channel, `s16le` |
 | Server → client | `device_ack` | `status`, `device_id`, optional `room` | See status values below |
 | Server → client | `pong` | none | Reply to a JSON `ping` |
 | Server → client | `error` | `code`, `message` | Rejected frame, auth failure, or a failed turn |
@@ -90,6 +91,30 @@ that prefix.
 Protocol-level WebSocket ping/pong (opcode 0x9 / 0xA) is separate. The server
 answers those inside the socket library. They do not replace JSON `ping`.
 
+## Audio
+
+Press-and-hold on the glass records 16 kHz mono PCM into the `audio` flash
+partition. Release uploads one WAV:
+
+| Item | Value |
+| --- | --- |
+| Upload | `POST /api/device/v1/audio` |
+| Body | `Content-Type: audio/wav`, 16 kHz, mono, s16le |
+| Auth | `Authorization: Bearer` with the same device token as the socket |
+| Download | `GET /api/device/v1/audio/{id}` returns raw PCM (`application/octet-stream`) |
+| Playable frame | `sample_rate` 16000, `channels` 1, `encoding` `s16le`, `url` a path on this host |
+
+```json
+{"type":"assistant_audio","id":"clip-1","url":"/api/device/v1/audio/clip-1","sample_rate":16000,"channels":1,"encoding":"s16le"}
+```
+
+The origin is the Device WebSocket URI with `ws://` rewritten to `http://` and
+`wss://` rewritten to `https://`. The host transcribes the WAV and starts the
+turn from that transcript. Holding again while PCM is playing stops playback
+and starts a new recording. A drop of Wi-Fi or the socket during the hold
+discards that clip and shows the worried face. `unauthorized` still stops
+reconnecting.
+
 ## v0 client sequence
 
 1. Connect.
@@ -98,5 +123,4 @@ answers those inside the socket library. They do not replace JSON `ping`.
 4. On `device_ack` / `hello`, send one canned `user_text` if that option is on and no manual line is waiting.
 5. BOOT (GPIO9) or a line typed into the serial monitor submits another `user_text`.
 6. Show `assistant_text` on the log and map a few substrings onto the fox face.
-
-There is no audio frame and no Xiaozhi cloud opcode in this sequence.
+7. Press-and-hold uploads `POST /api/device/v1/audio`. On `assistant_audio`, `GET` the path and play the PCM.

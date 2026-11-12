@@ -35,10 +35,9 @@
 
 #define BOARD_BOOT_GPIO GPIO_NUM_9
 
-/* Recorded for a later capture path. v0 does not start I2S or a codec. */
 #define BOARD_I2S_MCLK GPIO_NUM_19
 #define BOARD_I2S_BCLK GPIO_NUM_20
 #define BOARD_I2S_WS GPIO_NUM_22
 #define BOARD_I2S_DIN GPIO_NUM_21
 #define BOARD_I2S_DOUT GPIO_NUM_23
-/* ES8311 playback + ES7210 capture share BOARD_I2C_*. Not started in v0. */
+/* ES8311 playback and ES7210 capture share BOARD_I2C_*. */

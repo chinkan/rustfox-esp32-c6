@@ -1,33 +1,25 @@
 # RustFox ESP32-C6 firmware for the Waveshare ESP32-C6-Touch-AMOLED-2.16
 
-ESP-IDF firmware for the [Waveshare ESP32-C6-Touch-AMOLED-2.16](https://www.waveshare.com/esp32-c6-touch-amoled-2.16.htm). It runs on the ESP32-C6 and drives the board's 2.16-inch 480×480 AMOLED. This repository is the v0 [RustFox](https://github.com/chinkan/RustFox) Device WebSocket client: it joins Wi-Fi, exchanges JSON text frames on `GET /api/device/v1/ws`, and draws a procedural fox face on the panel.
+ESP-IDF firmware for the [Waveshare ESP32-C6-Touch-AMOLED-2.16](https://www.waveshare.com/esp32-c6-touch-amoled-2.16.htm). It runs on the ESP32-C6 and drives the board's 2.16-inch 480×480 AMOLED. This repository is the [RustFox](https://github.com/chinkan/RustFox) Device WebSocket client: it joins Wi-Fi, exchanges JSON text frames on `GET /api/device/v1/ws`, draws a full-screen procedural fox on the panel, and uploads a press-and-hold recording for the host to transcribe.
 
 ## What this client does
 
 [RustFox](https://github.com/chinkan/RustFox) is the self-hosted assistant. This firmware lives in this repository. It is not part of the RustFox monorepo.
 
-With a Wi-Fi network and a device token, the board opens the Device WebSocket on your RustFox instance, sends text, and shows the assistant reply on the fox face. You send text with a canned line, the BOOT button, or a line typed in the serial monitor. Speech-to-text runs on the RustFox host, not on the device.
+With a Wi-Fi network and a device token, the board opens the Device WebSocket on your RustFox instance, sends text, and shows the assistant reply on the fox face. You send text with a canned line, the BOOT button, or a line typed in the serial monitor. Hold anywhere on the glass to record; release uploads a 16 kHz mono WAV, and the board plays the 16 kHz mono PCM reply. Speech-to-text runs on the RustFox host, not on the device.
 
 ## Features
-
-### Current
 
 - Wi-Fi station mode.
 - JSON text frames on `GET /api/device/v1/ws`.
 - Device token in an `Authorization: Bearer` header, or in a first `auth` text frame.
 - `device_hello`, `user_text`, JSON `ping`, and `assistant_text`.
 - Canned `user_text`, the BOOT button on GPIO9, and lines from `idf.py monitor`.
-- A 96×96 procedural fox face, blitted to the panel in 16-line stripes.
+- A full-screen procedural fox, drawn in 16-line stripes. Ears, head, eyes, nose, and mouth ease between idle, listening, thinking, speaking, and happy.
 - QSPI AMOLED bring-up through the AXP2101 power-management chip.
-- Host tests for the JSON frames and the fox face (`make -C tests/host test`).
-
-### Planned
-
-These items are follow-up work. They are not in this tree:
-
-- A full-screen official logo.
-- Touch.
-- Press-and-hold talk.
+- Touch on the shared I2C bus. The firmware probes CST9220 and CST9217 and uses whichever answers.
+- Press-and-hold to talk. ES7210 capture and ES8311 playback on I2S. The clip is written to a flash partition, uploaded as one WAV, and the PCM reply is streamed to the speaker.
+- Host tests for the JSON frames, the fox face, and the press-and-hold timing (`make -C tests/host test`).
 
 ## Hardware
 
@@ -39,9 +31,11 @@ These items are follow-up work. They are not in this tree:
 | Flash | 16 MB external NOR |
 | Panel | 2.16" AMOLED, 480×480, QSPI |
 | PMIC | AXP2101 at I2C `0x34` |
+| Touch | CST9220 or CST9217 at I2C `0x5A`, reset GPIO11, interrupt GPIO5 |
+| Audio | ES7210 capture and ES8311 playback, I2S MCLK 19, BCLK 20, WS 22, DIN 21, DOUT 23 |
 | Buttons | BOOT on GPIO9 |
 
-Pin assignments are in `main/board_pins.h`. GPIO12 and GPIO13 are USB D− and D+ and are left unused. The partition table in `partitions.csv` gives the factory app 4 MB of the 16 MB flash. The rest of the flash is unused.
+Pin assignments are in `main/board_pins.h`. GPIO12 and GPIO13 are USB D− and D+ and are left unused. The partition table in `partitions.csv` gives the factory app 4 MB of the 16 MB flash, then an `audio` partition that holds one press-and-hold clip.
 
 The pin map, the AXP2101 sequence that powers the panel, and the QSPI init commands are adapted from the MIT firmware [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) `main/boards/waveshare/esp32-c6-touch-amoled-2.16/` (revision `a73e9a7e266e3196d1368ba46c30bee0d81f0a64`). See `THIRD_PARTY_NOTICES.md`.
 
@@ -49,7 +43,7 @@ The pin map, the AXP2101 sequence that powers the panel, and the QSPI init comma
 
 **No PSRAM.** 512 KB of HP SRAM is shared with Wi-Fi. The fox is blitted in 16-line stripes. A full 480×480 RGB565 framebuffer is about 450 KB, and this firmware does not allocate one. The QSPI bus max transfer is one stripe, `480 × 16 × 2` bytes.
 
-**Controller names.** The Waveshare product page calls the glass CO5300 and the touch chip CST9220. This firmware initializes the panel with the SH8601 QSPI command set from `espressif/esp_lcd_sh8601` (Apache-2.0), the same command set as the Xiaozhi board file. That board file names the touch chip CST9217. Touch is left off. See [Planned](#planned).
+**Controller names.** The Waveshare product page calls the glass CO5300 and the touch chip CST9220. This firmware initializes the panel with the SH8601 QSPI command set from `espressif/esp_lcd_sh8601` (Apache-2.0), the same command set as the Xiaozhi board file. That board file names the touch chip CST9217. Both parts use I2C `0x5A`. At boot the firmware reads the chip id and keeps the part that answers.
 
 **Address window.** Column and page commands `0x2A` and `0x2B` are programmed as `0x0000`–`0x01DF` on both axes (480 pixels). Command `0x36` (MADCTL) is `0xA0`. The panel config uses RGB element order. The Xiaozhi init table this sequence comes from programs a 410×502 window (2.06-inch geometry) while its `config.h` names 480×480. This firmware uses the 480×480 window.
 
@@ -105,7 +99,9 @@ Menu path: **RustFox ESP32-C6**.
 | BOOT button | On by default. GPIO9 sends the canned line. |
 | Serial lines | On by default. A line typed into `idf.py monitor` is `user_text`. |
 | JSON ping interval | Default 30000 ms (30 seconds), after authentication. Range 5000–120000 ms. |
-| QSPI panel | On by default. If the PMIC or the panel does not answer, the socket still runs. |
+| QSPI panel | On by default. If the PMIC or the panel does not answer, the socket still runs. The fox is drawn in 16-line stripes. |
+| Touch | On by default. Probes CST9220 and CST9217. Press anywhere on the glass and hold to record. |
+| Press-and-hold talk | On by default, with touch. Release uploads the clip. A hold under about 0.3 s is dropped. A hold stops at about 15 s and sends what was captured. |
 
 `sdkconfig` holds the SSID, the password, and the device token. `.gitignore` lists `sdkconfig` and `sdkconfig.old`. Do not commit them. The log records the token length and leaves the token itself out.
 
@@ -134,7 +130,7 @@ A line longer than 383 bytes is dropped. If a typed line is already waiting when
 make -C tests/host test
 ```
 
-The tests compile `components/rf_frames` and `components/rf_face` on the host. GitHub Actions runs the same command on every push and pull request.
+The tests compile `components/rf_frames`, `components/rf_face`, and `components/rf_talk` on the host. GitHub Actions runs the same command on every push and pull request.
 
 ## Protocol
 
@@ -149,6 +145,7 @@ Each WebSocket message is one JSON text frame. This client ignores binary frames
 | Client → server | `ping` | — | Optional keepalive |
 | Client → server | `device_hello` | `device_id`, optional `room`, `fw_version` | Optional. Sent after authentication |
 | Server → client | `assistant_text` | `text` | One or more replies |
+| Server → client | `assistant_audio` | `id`, `url`, `sample_rate`, `channels`, `encoding` | PCM is ready to download |
 | Server → client | `device_ack` | `status`, `device_id`, optional `room` | `authenticated`, `hello`, or `queued` |
 | Server → client | `pong` | — | Reply to JSON `ping` |
 | Server → client | `error` | `code`, `message` | Optional. `unauthorized` stops the client |
@@ -161,6 +158,10 @@ Each WebSocket message is one JSON text frame. This client ignores binary frames
 {"type":"assistant_text","text":"done"}
 ```
 
+```json
+{"type":"assistant_audio","id":"clip-1","url":"/api/device/v1/audio/clip-1","sample_rate":16000,"channels":1,"encoding":"s16le"}
+```
+
 What the client sends:
 
 1. Connect.
@@ -169,6 +170,7 @@ What the client sends:
 4. On `device_ack` / `hello`, send one canned `user_text` when that option is on and no typed line is waiting.
 5. BOOT (GPIO9) or a line from the serial monitor sends another `user_text`.
 6. Log `assistant_text` and map a few substrings onto the fox face.
+7. A press on the glass records. Release uploads one 16 kHz mono WAV to `POST /api/device/v1/audio` with the same Bearer token. `assistant_audio` points at `GET /api/device/v1/audio/{id}`, and the board plays that 16 kHz mono PCM. Holding again while the reply is playing stops it and starts a new recording.
 
 JSON `ping` is separate from WebSocket protocol ping and pong. This client sends a JSON `ping` on the menu interval after authentication. The default is 30 seconds.
 
@@ -176,20 +178,19 @@ A wrong or revoked Bearer token fails the HTTP upgrade with status **401**. Ther
 
 ## Fox face
 
-`components/rf_face` draws the on-device face: ears, eyes, a blink every 3.2 seconds (held 140 ms), and a mouth that follows the emotion. The panel code blits a **96×96** RGB565 sprite in 16-line stripes, centered on the 480×480 panel. There is no 480×480 framebuffer.
+`components/rf_face` draws the on-device face across the full 480×480 panel: ears, head, eyes, nose, and mouth. Idle blinks, sways the ears, and breathes. Listening, thinking, speaking, and the other emotions ease into place. The panel code paints 16-line stripes. There is no 480×480 framebuffer and no sprite atlas.
 
-Emotions are `neutral`, `happy`, `sad`, `surprised`, `worried`, `sleepy`, `thinking`, and `angry`. The serial log prints an ASCII fox when the emotion changes. Assistant text is matched with a short substring list (English and a few Cantonese and Chinese phrases). Any other text stays neutral.
+Emotions are `neutral`, `happy`, `sad`, `surprised`, `worried`, `sleepy`, `thinking`, and `angry`. Connection loss and `unauthorized` draw the worried overlay. The serial log prints an ASCII fox when the emotion changes. Assistant text is matched with a short substring list (English and a few Cantonese and Chinese phrases). Any other text stays neutral. A hold shows a listening cue. At the 15 second cap the cue changes, then the clip is uploaded. While the reply plays, the mouth follows the speaking cue.
 
 The MIT widget [0015/lvgl_kawaii_face](https://github.com/0015/lvgl_kawaii_face) is vendored under `third_party/lvgl_kawaii_face/` and is not linked. Its canvases are sized to the parent, and a full-panel canvas does not fit beside Wi-Fi. Emotion names overlap that widget where both define them (`neutral`, `happy`, `sad`, `surprised`, `angry`, `sleepy`, `worried`). The Xiaozhi sample for this board uses Twemoji, which is CC-BY-4.0. Twemoji is not vendored here.
 
 ## Current limits
 
 - Speech-to-text runs on the RustFox host, not on the device. This ESP32-C6 board has no PSRAM (512 KB HP SRAM), so the firmware has no on-device speech-to-text and no wake-word model.
-- Microphone pins are recorded in `main/board_pins.h` (ES8311 playback and ES7210 capture on the shared I2C bus). I2S and the codecs stay off. This firmware leaves the microphone and TTS unused.
-- Touch stays off. See [Planned](#planned).
-- Display updates are 16-line stripes. The face sprite is 96×96.
+- The microphone and speaker are the ES7210 and ES8311 on the I2S pins in `main/board_pins.h`. Capture is 16 kHz mono, streamed into the `audio` flash partition. Playback is 16 kHz mono PCM. This firmware does not run a wake-word model.
+- Display updates are 16-line stripes. The fox is drawn to fill the 480×480 panel. A full-panel framebuffer is not allocated.
 - Incoming text frames larger than 8 KiB are dropped. The log and the face keep 1023 bytes of `text`. RustFox accepts a frame up to 256 KiB and a `user_text` of up to 16000 Unicode scalars. A monitor line longer than 383 bytes is dropped.
-- This client sends JSON text frames. It ignores binary frames.
+- This client sends JSON text frames on the Device WebSocket. It ignores binary frames. Audio upload and download use HTTP on the same host and port as that socket.
 
 ## License
 

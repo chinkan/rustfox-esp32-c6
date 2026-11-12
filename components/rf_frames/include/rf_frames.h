@@ -35,6 +35,7 @@ typedef enum {
     RF_TYPE_DEVICE_ACK,
     RF_TYPE_PONG,
     RF_TYPE_ERROR,
+    RF_TYPE_ASSISTANT_AUDIO,
     RF_TYPE_UNKNOWN
 } rf_frame_type_t;
 
@@ -50,6 +51,13 @@ typedef struct {
     char device_id[RF_META_MAX_CHARS + 1];
     char room[RF_META_MAX_CHARS + 1];
     char fw_version[32];
+    /* assistant_audio (ADR-0066). sample_rate and channels are 0 when absent. */
+    char audio_id[48];
+    char audio_url[160];
+    char audio_encoding[16];
+    int sample_rate;
+    int channels;
+    int audio_truncated;
 } rf_frame_t;
 
 /* Encoders return the JSON byte length (no trailing NUL) or a negative RF_ERR_*. */
@@ -64,6 +72,9 @@ int rf_encode_device_hello(char *dst, size_t dst_len, const char *device_id,
 int rf_parse_frame(const char *json, size_t len, rf_frame_t *out);
 
 const char *rf_frame_type_name(rf_frame_type_t type);
+
+/* 16 kHz mono s16le assistant_audio with a same-origin audio path. */
+int rf_frame_audio_playable(const rf_frame_t *frame);
 
 #ifdef __cplusplus
 }

@@ -1,5 +1,7 @@
 # Name,     Type, SubType, Offset,  Size,    Flags
-# 16 MB external flash. The factory image is 4 MB; the rest is unused in v0.
+# 16 MB external flash. Factory image is 4 MB. The audio partition holds
+# one press-and-hold clip (16 kHz mono s16le, up to about 15 s).
 nvs,        data, nvs,     0x9000,  0x6000,
 phy_init,   data, phy,     0xf000,  0x1000,
 factory,    app,  factory, 0x10000, 0x400000,
+audio,      data, undefined, 0x410000, 0x80000,

@@ -3,6 +3,7 @@
 
 #include "rf_face.h"
 #include "rf_frames.h"
+#include "rf_talk.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -163,6 +164,26 @@ static void test_frames(void) {
     EXPECT(strcmp(RF_WS_PATH, "/api/device/v1/ws") == 0);
     EXPECT(RF_MAX_USER_TEXT_CHARS == 16000);
     EXPECT(RF_AUTH_WAIT_MS == 15000);
+
+    const char *audio =
+        "{\"type\":\"assistant_audio\",\"id\":\"clip-1\",\"url\":\"/api/device/v1/audio/clip-1\","
+        "\"sample_rate\":16000,\"channels\":1,\"encoding\":\"s16le\"}";
+    EXPECT(rf_parse_frame(audio, strlen(audio), &frame) == RF_OK);
+    EXPECT(frame.type == RF_TYPE_ASSISTANT_AUDIO);
+    EXPECT(rf_frame_audio_playable(&frame) == 1);
+    EXPECT(strcmp(frame.audio_id, "clip-1") == 0);
+
+    const char *bad_rate =
+        "{\"type\":\"assistant_audio\",\"id\":\"clip-1\",\"url\":\"/api/device/v1/audio/clip-1\","
+        "\"sample_rate\":24000,\"channels\":1,\"encoding\":\"s16le\"}";
+    EXPECT(rf_parse_frame(bad_rate, strlen(bad_rate), &frame) == RF_OK);
+    EXPECT(rf_frame_audio_playable(&frame) == 0);
+
+    const char *opus =
+        "{\"type\":\"assistant_audio\",\"id\":\"clip-1\",\"url\":\"/api/device/v1/audio/clip-1\","
+        "\"sample_rate\":16000,\"channels\":1,\"encoding\":\"opus\"}";
+    EXPECT(rf_parse_frame(opus, strlen(opus), &frame) == RF_OK);
+    EXPECT(rf_frame_audio_playable(&frame) == 0);
 }
 
 static void test_face(void) {
@@ -172,19 +193,28 @@ static void test_face(void) {
     EXPECT(face.eye_open == 35);
 
     rf_face_set_emotion(&face, RF_EMOTION_NEUTRAL);
-    EXPECT(face.eye_open == 100);
-    EXPECT(rf_face_tick(&face, 1) == 0 || face.eye_open == 100);
+    EXPECT(face.emotion == RF_EMOTION_NEUTRAL);
+    EXPECT(face.eye_open == 35);
+    EXPECT(rf_face_tick(&face, 80) == 1);
+    EXPECT(face.eye_open > 35 && face.eye_open < 100);
+    EXPECT(rf_face_tick(&face, 400) == 1);
+    EXPECT(face.eye_open >= 95);
 
     face.blink_interval_ms = 1000;
-    face.blink_hold_ms = 100;
+    face.blink_hold_ms = 200;
     face.ms_since_blink = 0;
     face.blinking = 0;
+    face.eye_q = 1000;
+    face.eye_from = 1000;
+    face.eye_to = 1000;
+    face.eye_open = 100;
     EXPECT(rf_face_tick(&face, 1000) == 1);
     EXPECT(face.blinking == 1);
-    EXPECT(face.eye_open == 0);
+    EXPECT(rf_face_tick(&face, 100) == 1);
+    EXPECT(face.eye_open < 20);
     EXPECT(rf_face_tick(&face, 100) == 1);
     EXPECT(face.blinking == 0);
-    EXPECT(face.eye_open == 100);
+    EXPECT(face.eye_open > 80);
 
     EXPECT(rf_face_emotion_from_text("Great job") == RF_EMOTION_HAPPY);
     EXPECT(rf_face_emotion_from_text("I cannot do that") == RF_EMOTION_SAD);
@@ -193,6 +223,11 @@ static void test_face(void) {
     EXPECT(rf_face_emotion_from_text("hello there") == RF_EMOTION_NEUTRAL);
     EXPECT(strcmp(rf_face_emotion_name(RF_EMOTION_WORRIED), "worried") == 0);
 
+    rf_face_set_emotion(&face, RF_EMOTION_NEUTRAL);
+    rf_face_set_cue(&face, RF_CUE_NONE);
+    rf_face_tick(&face, RF_FACE_LERP_MS);
+    face.blinking = 0;
+    face.eye_open = 100;
     char art[192];
     EXPECT(rf_face_format(&face, art, sizeof(art)) == 0);
     EXPECT(strstr(art, "neutral") != NULL);
@@ -214,21 +249,146 @@ static void test_face(void) {
     EXPECT(open_white > shut_white);
     EXPECT(shut_white == 0);
 
+    rf_face_set_emotion(&face, RF_EMOTION_HAPPY);
+    rf_face_set_cue(&face, RF_CUE_NONE);
+    rf_face_tick(&face, RF_FACE_LERP_MS);
     face.blinking = 0;
-    face.eye_open = 90;
-    face.emotion = RF_EMOTION_HAPPY;
     rf_face_render_rgb565(&face, happy_px, RF_FACE_W, RF_FACE_H);
-    face.emotion = RF_EMOTION_SAD;
-    face.eye_open = 55;
+    rf_face_set_emotion(&face, RF_EMOTION_SAD);
+    rf_face_tick(&face, RF_FACE_LERP_MS);
+    face.blinking = 0;
     rf_face_render_rgb565(&face, sad_px, RF_FACE_W, RF_FACE_H);
     EXPECT(checksum(happy_px, RF_FACE_W * RF_FACE_H) != checksum(sad_px, RF_FACE_W * RF_FACE_H));
     EXPECT(count_color(happy_px, RF_FACE_W * RF_FACE_H, RF_FACE_COLOR_EAR) > 0);
+    EXPECT(count_color(happy_px, RF_FACE_W * RF_FACE_H, RF_FACE_COLOR_NOSE) > 0);
+    EXPECT(count_color(happy_px, RF_FACE_W * RF_FACE_H, RF_FACE_COLOR_MOUTH) > 0);
     EXPECT(rf_face_render_rgb565(NULL, open_px, 8, 8) == -1);
+
+    static uint16_t stripe[RF_FACE_W * 16];
+    for (int y = 0; y < RF_FACE_H;) {
+        int rows = 16;
+        if (y + rows > RF_FACE_H) {
+            rows = RF_FACE_H - y;
+        }
+        EXPECT(rf_face_render_stripe(&face, stripe, RF_FACE_W, y, rows, RF_FACE_H) == 0);
+        EXPECT(memcmp(stripe, sad_px + y * RF_FACE_W, (size_t)rows * RF_FACE_W * sizeof(uint16_t)) == 0);
+        y += rows;
+    }
+
+    static uint16_t wide[480 * 16];
+    rf_face_init(&face);
+    rf_face_set_emotion(&face, RF_EMOTION_NEUTRAL);
+    rf_face_tick(&face, RF_FACE_LERP_MS);
+    face.eye_open = 100;
+    face.blinking = 0;
+    EXPECT(rf_face_render_stripe(&face, wide, 480, 0, 16, 480) == 0);
+    EXPECT(count_color(wide, 480 * 16, RF_FACE_COLOR_EAR) > 200);
+    EXPECT(rf_face_render_stripe(&face, wide, 480, 250, 16, 480) == 0);
+    int fur = count_color(wide, 480 * 16, RF_FACE_COLOR_FUR);
+    EXPECT(fur > 480 * 16 / 2);
+
+    rf_face_set_cue(&face, RF_CUE_LISTENING);
+    rf_face_tick(&face, RF_FACE_LERP_MS);
+    EXPECT(face.perk_q > 700);
+    rf_face_set_cue(&face, RF_CUE_SPEAKING);
+    rf_face_tick(&face, RF_FACE_LERP_MS);
+    EXPECT(face.mouth_q > 400);
+    rf_face_set_cue(&face, RF_CUE_HOLD_CAP);
+    rf_face_tick(&face, RF_FACE_LERP_MS);
+    face.emotion = RF_EMOTION_NEUTRAL;
+    EXPECT(rf_face_render_stripe(&face, wide, 480, 8, 16, 480) == 0);
+    EXPECT(count_color(wide, 480 * 16, RF_FACE_COLOR_CUE) > 20);
+
+    rf_face_set_emotion(&face, RF_EMOTION_WORRIED);
+    rf_face_set_cue(&face, RF_CUE_LISTENING);
+    rf_face_tick(&face, RF_FACE_LERP_MS);
+    EXPECT(face.worry_q > 700);
+    EXPECT(face.perk_q < 100);
+    EXPECT(rf_face_render_stripe(&face, wide, 480, 0, 16, 480) == 0);
+    EXPECT(count_color(wide, 480 * 16, RF_FACE_COLOR_ALERT) > 20);
+    EXPECT(count_color(wide, 480 * 16, RF_FACE_COLOR_CUE) == 0);
+}
+
+static void test_talk(void) {
+    rf_talk_t talk;
+    rf_talk_init(&talk);
+    rf_talk_set_link(&talk, 1);
+    rf_talk_press(&talk);
+    EXPECT(talk.phase == RF_TALK_HOLDING);
+    rf_talk_tick(&talk, 200);
+    rf_talk_release(&talk);
+    EXPECT(talk.phase == RF_TALK_DISCARD);
+    rf_talk_finish(&talk);
+
+    rf_talk_set_link(&talk, 1);
+    rf_talk_press(&talk);
+    rf_talk_tick(&talk, 400);
+    rf_talk_release(&talk);
+    EXPECT(talk.phase == RF_TALK_SEND);
+    EXPECT(talk.cap_cue == 0);
+    rf_talk_finish(&talk);
+
+    rf_talk_set_link(&talk, 1);
+    rf_talk_press(&talk);
+    rf_talk_tick(&talk, RF_TALK_MAX_HOLD_MS);
+    EXPECT(talk.phase == RF_TALK_SEND);
+    EXPECT(talk.cap_cue == 1);
+    rf_talk_release(&talk);
+    EXPECT(talk.phase == RF_TALK_SEND);
+    rf_talk_finish(&talk);
+
+    rf_talk_set_link(&talk, 1);
+    rf_talk_set_playing(&talk, 1);
+    rf_talk_press(&talk);
+    EXPECT(talk.barge_in == 1);
+    EXPECT(talk.playing == 0);
+    EXPECT(talk.phase == RF_TALK_HOLDING);
+    rf_talk_set_link(&talk, 0);
+    EXPECT(talk.phase == RF_TALK_DISCARD);
+    rf_talk_finish(&talk);
+
+    rf_talk_set_link(&talk, 0);
+    rf_talk_press(&talk);
+    EXPECT(talk.phase == RF_TALK_DISCARD);
+
+    uint8_t report[10] = {0};
+    report[5] = 1;
+    report[6] = RF_CST_ACK;
+    EXPECT(rf_cst_frame_down(report, sizeof(report)) == 1);
+    report[6] = 0;
+    EXPECT(rf_cst_frame_down(report, sizeof(report)) == 0);
+    report[6] = RF_CST_ACK;
+    report[5] = 0;
+    EXPECT(rf_cst_frame_down(report, sizeof(report)) == 0);
+    EXPECT(rf_cst_kind_from_id(RF_CST_CHIP_CST9220) == 1);
+    EXPECT(rf_cst_kind_from_id(RF_CST_CHIP_CST9217) == 2);
+    EXPECT(rf_cst_kind_from_id(0x816) == 0);
+
+    uint8_t wav[RF_WAV_HEADER_BYTES];
+    rf_wav_write_header(wav, 16000, 32000);
+    EXPECT(memcmp(wav, "RIFF", 4) == 0);
+    EXPECT(memcmp(wav + 8, "WAVE", 4) == 0);
+    EXPECT(memcmp(wav + 36, "data", 4) == 0);
+    EXPECT(wav[22] == 1 && wav[23] == 0);
+    EXPECT(wav[24] == 0x80 && wav[25] == 0x3e);
+    EXPECT(wav[34] == 16 && wav[35] == 0);
+    EXPECT(wav[40] == 0x00 && wav[41] == 0x7d && wav[42] == 0 && wav[43] == 0);
+
+    char origin[64];
+    EXPECT(rf_audio_origin_from_ws("ws://192.168.1.10:8080/api/device/v1/ws", origin, sizeof(origin)) == 0);
+    EXPECT(strcmp(origin, "http://192.168.1.10:8080") == 0);
+    EXPECT(rf_audio_origin_from_ws("wss://fox.example/api/device/v1/ws", origin, sizeof(origin)) == 0);
+    EXPECT(strcmp(origin, "https://fox.example") == 0);
+    EXPECT(rf_audio_origin_from_ws("http://192.168.1.10/api/device/v1/ws", origin, sizeof(origin)) != 0);
+    EXPECT(rf_audio_path_ok("/api/device/v1/audio/abc") == 1);
+    EXPECT(rf_audio_path_ok("/api/device/v1/audio/") == 0);
+    EXPECT(rf_audio_path_ok("https://other/api/device/v1/audio/abc") == 0);
 }
 
 int main(void) {
     test_frames();
     test_face();
+    test_talk();
     if (g_failed) {
         fprintf(stderr, "%d assertion(s) failed\n", g_failed);
         return 1;

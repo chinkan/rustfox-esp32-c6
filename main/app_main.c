@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 chinkan.ai
 
+#include "board_audio.h"
 #include "board_panel.h"
 #include "board_pins.h"
+#include "board_touch.h"
 #include "device_link.h"
 #include "face_view.h"
+#include "talk_session.h"
 #include "wifi_sta.h"
 
 #include "driver/gpio.h"
@@ -84,17 +87,35 @@ void app_main(void) {
     ESP_LOGI(TAG, "panel QSPI cs=%d clk=%d d0=%d d1=%d d2=%d d3=%d  i2c sda=%d scl=%d",
              (int)BOARD_LCD_CS, (int)BOARD_LCD_PCLK, (int)BOARD_LCD_D0, (int)BOARD_LCD_D1,
              (int)BOARD_LCD_D2, (int)BOARD_LCD_D3, (int)BOARD_I2C_SDA, (int)BOARD_I2C_SCL);
-    ESP_LOGI(TAG, "boot gpio=%d  i2s mclk=%d bclk=%d ws=%d din=%d dout=%d (audio not started)",
+    ESP_LOGI(TAG, "boot gpio=%d  i2s mclk=%d bclk=%d ws=%d din=%d dout=%d",
              (int)BOARD_BOOT_GPIO, (int)BOARD_I2S_MCLK, (int)BOARD_I2S_BCLK, (int)BOARD_I2S_WS,
              (int)BOARD_I2S_DIN, (int)BOARD_I2S_DOUT);
 
     face_view_start();
     device_link_init();
 
+    esp_err_t bus_err = board_i2c_init();
+    if (bus_err != ESP_OK) {
+        ESP_LOGW(TAG, "i2c bus not ready (%s)", esp_err_to_name(bus_err));
+    }
+
     err = board_panel_init();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "panel not available (%s); continuing", esp_err_to_name(err));
     }
+
+#if CONFIG_RUSTFOX_ENABLE_TALK
+    if (board_audio_start(board_i2c_bus()) == ESP_OK) {
+        talk_session_start();
+    } else {
+        ESP_LOGW(TAG, "audio codecs not started");
+    }
+#endif
+#if CONFIG_RUSTFOX_ENABLE_TOUCH
+    if (board_touch_start(talk_session_on_contact) != ESP_OK) {
+        ESP_LOGW(TAG, "touch not started");
+    }
+#endif
 
 #if CONFIG_RUSTFOX_BOOT_BUTTON_SENDS_TEXT
     xTaskCreate(button_task, "rf_btn", 3072, NULL, 3, NULL);

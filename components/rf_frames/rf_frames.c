@@ -3,6 +3,8 @@
 
 #include "rf_frames.h"
 
+#include "rf_talk.h"
+
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
@@ -231,6 +233,8 @@ const char *rf_frame_type_name(rf_frame_type_t type) {
         return "pong";
     case RF_TYPE_ERROR:
         return "error";
+    case RF_TYPE_ASSISTANT_AUDIO:
+        return "assistant_audio";
     case RF_TYPE_UNKNOWN:
         return "unknown";
     case RF_TYPE_NONE:
@@ -264,7 +268,29 @@ static rf_frame_type_t type_from_name(const char *name) {
     if (strcmp(name, "error") == 0) {
         return RF_TYPE_ERROR;
     }
+    if (strcmp(name, "assistant_audio") == 0) {
+        return RF_TYPE_ASSISTANT_AUDIO;
+    }
     return RF_TYPE_UNKNOWN;
+}
+
+int rf_frame_audio_playable(const rf_frame_t *frame) {
+    if (!frame || frame->audio_truncated) {
+        return 0;
+    }
+    if (frame->type != RF_TYPE_ASSISTANT_AUDIO) {
+        return 0;
+    }
+    if (frame->sample_rate != RF_AUDIO_RATE || frame->channels != 1) {
+        return 0;
+    }
+    if (strcmp(frame->audio_encoding, "s16le") != 0) {
+        return 0;
+    }
+    if (!frame->audio_id[0] || !rf_audio_path_ok(frame->audio_url)) {
+        return 0;
+    }
+    return 1;
 }
 
 static void skip_ws(const char *s, size_t n, size_t *i) {
@@ -493,6 +519,27 @@ static void copy_field(const char *key, const char *value, int truncated, rf_fra
         copy_bounded(out->room, sizeof(out->room), value);
     } else if (strcmp(key, "fw_version") == 0) {
         copy_bounded(out->fw_version, sizeof(out->fw_version), value);
+    } else if (strcmp(key, "id") == 0) {
+        if (strlen(value) >= sizeof(out->audio_id)) {
+            out->audio_truncated = 1;
+            out->audio_id[0] = '\0';
+        } else {
+            copy_bounded(out->audio_id, sizeof(out->audio_id), value);
+        }
+    } else if (strcmp(key, "url") == 0) {
+        if (strlen(value) >= sizeof(out->audio_url)) {
+            out->audio_truncated = 1;
+            out->audio_url[0] = '\0';
+        } else {
+            copy_bounded(out->audio_url, sizeof(out->audio_url), value);
+        }
+    } else if (strcmp(key, "encoding") == 0) {
+        if (strlen(value) >= sizeof(out->audio_encoding)) {
+            out->audio_truncated = 1;
+            out->audio_encoding[0] = '\0';
+        } else {
+            copy_bounded(out->audio_encoding, sizeof(out->audio_encoding), value);
+        }
     }
 }
 
@@ -531,6 +578,29 @@ int rf_parse_frame(const char *json, size_t len, rf_frame_t *out) {
                 return RF_ERR_BAD_FRAME;
             }
             copy_field(key, value, trunc, out);
+        } else if (json[i] == '-' || (json[i] >= '0' && json[i] <= '9')) {
+            int sign = 1;
+            if (json[i] == '-') {
+                sign = -1;
+                i++;
+            }
+            if (i >= len || json[i] < '0' || json[i] > '9') {
+                return RF_ERR_BAD_FRAME;
+            }
+            long v = 0;
+            while (i < len && json[i] >= '0' && json[i] <= '9') {
+                v = v * 10 + (json[i] - '0');
+                if (v > 100000000L) {
+                    return RF_ERR_BAD_FRAME;
+                }
+                i++;
+            }
+            v *= sign;
+            if (strcmp(key, "sample_rate") == 0) {
+                out->sample_rate = (int)v;
+            } else if (strcmp(key, "channels") == 0) {
+                out->channels = (int)v;
+            }
         } else if (skip_value(json, len, &i) != 0) {
             return RF_ERR_BAD_FRAME;
         }

@@ -7,3 +7,4 @@
 
 void face_view_start(void);
 void face_view_set(rf_emotion_t emotion);
+void face_view_set_cue(rf_cue_t cue);

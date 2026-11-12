@@ -82,5 +82,22 @@ config RUSTFOX_ENABLE_PANEL
     default y
     help
         If the PMIC or panel does not answer, the WebSocket client still runs.
+        The fox is drawn in 16-line stripes. There is no full-panel framebuffer.
+
+config RUSTFOX_ENABLE_TOUCH
+    bool "Start the touch controller (CST9220 or CST9217)"
+    default y
+    help
+        Probe both chips on I2C SDA 8 / SCL 7. Reset is GPIO11, interrupt is
+        GPIO5. Press anywhere on the glass to hold a recording.
+
+config RUSTFOX_ENABLE_TALK
+    bool "Press-and-hold records and plays the reply"
+    default y
+    depends on RUSTFOX_ENABLE_TOUCH
+    help
+        Hold to record from the ES7210. Release uploads a 16 kHz mono WAV.
+        The reply PCM is played on the ES8311. A hold under about 0.3 s is
+        dropped. A hold is capped at about 15 s.
 
 endmenu
