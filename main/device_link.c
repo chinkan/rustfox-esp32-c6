@@ -48,6 +48,12 @@ static volatile int s_authed;
 static volatile int s_fatal;
 static volatile int s_rx_drop;
 static int s_started;
+static device_link_audio_fn s_audio_fn;
+
+static void show_worried(void) {
+    face_view_set(RF_EMOTION_WORRIED);
+    face_view_set_cue(RF_CUE_NONE);
+}
 
 static int queue_cmd(cmd_kind_t kind) {
     if (!s_q || (s_fatal && kind != CMD_STOP)) {
@@ -66,7 +72,7 @@ static void handle_text(const char *json, int len) {
     int rc = rf_parse_frame(json, (size_t)len, &frame);
     if (rc != RF_OK) {
         ESP_LOGW(TAG, "bad json text frame");
-        face_view_set(RF_EMOTION_WORRIED);
+        show_worried();
         return;
     }
     switch (frame.type) {
@@ -96,14 +102,21 @@ static void handle_text(const char *json, int len) {
     case RF_TYPE_ERROR:
         ESP_LOGW(TAG, "error code=%s message=%s", frame.code, frame.message);
         if (strcmp(frame.code, "unauthorized") == 0) {
-            s_fatal = 1;
-            s_authed = 0;
-            face_view_set(RF_EMOTION_WORRIED);
-            queue_cmd(CMD_STOP);
+            device_link_note_unauthorized();
         } else if (strcmp(frame.code, "agent") == 0) {
             face_view_set(RF_EMOTION_SAD);
         } else {
-            face_view_set(RF_EMOTION_WORRIED);
+            show_worried();
+        }
+        break;
+    case RF_TYPE_ASSISTANT_AUDIO:
+        if (!rf_frame_audio_playable(&frame)) {
+            ESP_LOGW(TAG, "assistant_audio ignored (want 16000 Hz mono s16le)");
+            break;
+        }
+        ESP_LOGI(TAG, "assistant_audio id=%s", frame.audio_id);
+        if (s_audio_fn) {
+            s_audio_fn(frame.audio_url);
         }
         break;
     default:
@@ -128,7 +141,7 @@ static void on_ws(void *args, esp_event_base_t base, int32_t id, void *data) {
         ESP_LOGW(TAG, "socket closed");
         s_authed = 0;
         if (!s_fatal) {
-            face_view_set(RF_EMOTION_WORRIED);
+            show_worried();
         }
         return;
     }
@@ -137,10 +150,7 @@ static void on_ws(void *args, esp_event_base_t base, int32_t id, void *data) {
         int status = ev ? ev->error_handle.esp_ws_handshake_status_code : 0;
         ESP_LOGW(TAG, "socket error handshake_status=%d", status);
         if (status == 401) {
-            s_fatal = 1;
-            s_authed = 0;
-            face_view_set(RF_EMOTION_WORRIED);
-            queue_cmd(CMD_STOP);
+            device_link_note_unauthorized();
         }
         return;
     }
@@ -330,17 +340,17 @@ void device_link_connect(void) {
     }
     if (!token[0]) {
         ESP_LOGW(TAG, "no device token; socket not started");
-        face_view_set(RF_EMOTION_WORRIED);
+        show_worried();
         return;
     }
     if (strlen(token) > TOKEN_CAP || strpbrk(token, "\r\n") != NULL) {
         ESP_LOGE(TAG, "device token is empty, too long, or contains CR/LF");
-        face_view_set(RF_EMOTION_WORRIED);
+        show_worried();
         return;
     }
     if (!uri[0] || strstr(uri, RF_WS_PATH) == NULL) {
         ESP_LOGE(TAG, "URI must contain %s", RF_WS_PATH);
-        face_view_set(RF_EMOTION_WORRIED);
+        show_worried();
         return;
     }
 
@@ -382,4 +392,19 @@ void device_link_connect(void) {
     }
     s_started = 1;
     ESP_LOGI(TAG, "connecting %s", uri);
+}
+
+int device_link_session_ok(void) {
+    return s_authed && !s_fatal && s_client && esp_websocket_client_is_connected(s_client);
+}
+
+void device_link_note_unauthorized(void) {
+    s_fatal = 1;
+    s_authed = 0;
+    show_worried();
+    queue_cmd(CMD_STOP);
+}
+
+void device_link_set_audio_fn(device_link_audio_fn fn) {
+    s_audio_fn = fn;
 }

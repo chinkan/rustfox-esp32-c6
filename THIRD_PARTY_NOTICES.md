@@ -33,5 +33,14 @@ Not vendored. The IDF component manager downloads them from
 
 - `espressif/esp_websocket_client` 1.8.0 — Apache-2.0
 - `espressif/esp_lcd_sh8601` 2.0.1 — Apache-2.0
+- `espressif/esp_codec_dev` 1.6.2 — Apache-2.0 (ES7210 and ES8311)
 
 ESP-IDF itself is Apache-2.0 and is not vendored.
+
+## CST9220 / CST9217 register map
+
+`main/board_touch.c` is original. The command-page id read and the `0xD000`
+report follow the public CST92xx map. ESPHome's CST9220 driver and Lewis He's
+SensorLib `TouchDrvCST92xx` (both MIT) document that map. Neither tree is
+vendored. This firmware does not write the touch-report ack, so a hold is not
+cleared by the controller.

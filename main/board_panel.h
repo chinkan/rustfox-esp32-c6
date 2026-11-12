@@ -5,11 +5,17 @@
 
 #include "rf_face.h"
 
+#include "driver/i2c_master.h"
 #include "esp_err.h"
 
+/* Shared I2C bus (AXP2101, touch, ES8311, ES7210). Safe to call twice. */
+esp_err_t board_i2c_init(void);
+i2c_master_bus_handle_t board_i2c_bus(void);
+
 /* Power the AXP2101 rails and the QSPI panel, then paint black.
- * Failure leaves the socket path usable. */
+ * Failure leaves the socket path usable. The SH8601 command set stays. */
 esp_err_t board_panel_init(void);
 
-/* Blit the 96x96 fox in the center. No full-frame framebuffer. */
+/* Blit the full 480x480 fox in STRIPE_ROWS (16) line bands.
+ * There is no 480x480 framebuffer. */
 void board_panel_draw(const rf_face_t *face);

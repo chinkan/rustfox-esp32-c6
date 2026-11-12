@@ -5,6 +5,9 @@ idf_component_register(
         "board_panel.c"
         "wifi_sta.c"
         "device_link.c"
+        "board_touch.c"
+        "board_audio.c"
+        "talk_session.c"
     INCLUDE_DIRS "."
     REQUIRES
         nvs_flash
@@ -12,10 +15,15 @@ idf_component_register(
         esp_event
         esp_netif
         esp_websocket_client
+        esp_http_client
+        esp_timer
+        spi_flash
         esp_lcd
         esp_lcd_sh8601
+        esp_codec_dev
         driver
         mbedtls
         rf_frames
         rf_face
+        rf_talk
 )

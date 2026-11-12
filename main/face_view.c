@@ -54,7 +54,7 @@ void face_view_start(void) {
         ESP_LOGE(TAG, "mutex failed");
         return;
     }
-    if (xTaskCreate(face_task, "rf_face", 6144, NULL, 4, NULL) != pdPASS) {
+    if (xTaskCreate(face_task, "rf_face", 8192, NULL, 3, NULL) != pdPASS) {
         ESP_LOGE(TAG, "task failed");
     }
 }
@@ -65,6 +65,16 @@ void face_view_set(rf_emotion_t emotion) {
     }
     xSemaphoreTake(s_mu, portMAX_DELAY);
     rf_face_set_emotion(&s_face, emotion);
+    s_dirty = 1;
+    xSemaphoreGive(s_mu);
+}
+
+void face_view_set_cue(rf_cue_t cue) {
+    if (!s_mu) {
+        return;
+    }
+    xSemaphoreTake(s_mu, portMAX_DELAY);
+    rf_face_set_cue(&s_face, cue);
     s_dirty = 1;
     xSemaphoreGive(s_mu);
 }

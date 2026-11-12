@@ -33,7 +33,7 @@ static i2c_master_bus_handle_t s_i2c;
 static i2c_master_dev_handle_t s_axp;
 static esp_lcd_panel_handle_t s_panel;
 static int s_ready;
-static int s_cleared;
+static int s_axp_ok;
 
 static const uint8_t k_00[] = {0x00};
 static const uint8_t k_c4[] = {0x80};
@@ -60,10 +60,10 @@ static const sh8601_lcd_init_cmd_t k_init[] = {
     {0x51, k_51, 1, 0},
 };
 
+/* One QSPI transfer. A 480x480 RGB565 frame is not allocated. */
 #define STRIPE_ROWS 16
 
 static uint16_t s_stripe[BOARD_LCD_H_RES * STRIPE_ROWS];
-static uint16_t s_face_px[RF_FACE_W * RF_FACE_H];
 
 static esp_err_t axp_write(uint8_t reg, uint8_t val) {
     uint8_t buf[2] = {reg, val};
@@ -181,15 +181,17 @@ static esp_err_t clear_panel(void) {
             return err;
         }
     }
-    s_cleared = 1;
     return ESP_OK;
 }
 
-esp_err_t board_panel_init(void) {
-#if !CONFIG_RUSTFOX_ENABLE_PANEL
-    ESP_LOGI(TAG, "panel bring-up disabled");
-    return ESP_ERR_NOT_SUPPORTED;
-#else
+i2c_master_bus_handle_t board_i2c_bus(void) {
+    return s_i2c;
+}
+
+esp_err_t board_i2c_init(void) {
+    if (s_i2c) {
+        return s_axp_ok ? ESP_OK : ESP_FAIL;
+    }
     i2c_master_bus_config_t bus_cfg = {
         .i2c_port = I2C_NUM_0,
         .sda_io_num = BOARD_I2C_SDA,
@@ -201,6 +203,7 @@ esp_err_t board_panel_init(void) {
     esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_i2c);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2c bus failed: %s", esp_err_to_name(err));
+        s_i2c = NULL;
         return err;
     }
     i2c_device_config_t dev_cfg = {
@@ -215,11 +218,24 @@ esp_err_t board_panel_init(void) {
     }
     err = axp_bringup();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "axp2101 did not ack at 0x%02x (%s); panel skipped", BOARD_AXP2101_ADDR,
-                 esp_err_to_name(err));
+        ESP_LOGW(TAG, "axp2101 did not ack at 0x%02x (%s)", BOARD_AXP2101_ADDR, esp_err_to_name(err));
         return err;
     }
+    s_axp_ok = 1;
     ESP_LOGI(TAG, "axp2101 rails on");
+    return ESP_OK;
+}
+
+esp_err_t board_panel_init(void) {
+#if !CONFIG_RUSTFOX_ENABLE_PANEL
+    ESP_LOGI(TAG, "panel bring-up disabled");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    esp_err_t err = board_i2c_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "panel skipped; i2c/pmic not ready");
+        return err;
+    }
 
     const spi_bus_config_t buscfg = SH8601_PANEL_BUS_QSPI_CONFIG(
         BOARD_LCD_PCLK, BOARD_LCD_D0, BOARD_LCD_D1, BOARD_LCD_D2, BOARD_LCD_D3,
@@ -284,24 +300,15 @@ void board_panel_draw(const rf_face_t *face) {
     if (!s_ready || !face || !s_panel) {
         return;
     }
-    if (rf_face_render_rgb565(face, s_face_px, RF_FACE_W, RF_FACE_H) != 0) {
-        return;
-    }
-    if (!s_cleared) {
-        if (clear_panel() != ESP_OK) {
+    for (int y = 0; y < BOARD_LCD_V_RES; y += STRIPE_ROWS) {
+        int rows = STRIPE_ROWS;
+        if (y + rows > BOARD_LCD_V_RES) {
+            rows = BOARD_LCD_V_RES - y;
+        }
+        if (rf_face_render_stripe(face, s_stripe, BOARD_LCD_H_RES, y, rows, BOARD_LCD_V_RES) != 0) {
             return;
         }
-    }
-    const int x0 = (BOARD_LCD_H_RES - RF_FACE_W) / 2;
-    const int y0 = (BOARD_LCD_V_RES - RF_FACE_H) / 2;
-    for (int row = 0; row < RF_FACE_H; row += STRIPE_ROWS) {
-        int rows = STRIPE_ROWS;
-        if (row + rows > RF_FACE_H) {
-            rows = RF_FACE_H - row;
-        }
-        const uint16_t *band = s_face_px + row * RF_FACE_W;
-        esp_err_t err =
-            esp_lcd_panel_draw_bitmap(s_panel, x0, y0 + row, x0 + RF_FACE_W, y0 + row + rows, band);
+        esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, BOARD_LCD_H_RES, y + rows, s_stripe);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "blit failed: %s", esp_err_to_name(err));
             return;
