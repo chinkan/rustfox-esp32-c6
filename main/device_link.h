@@ -6,8 +6,12 @@
 /* Create the send queue. Safe to call before Wi-Fi is up. */
 void device_link_init(void);
 
-/* Open /api/device/v1/ws. Requires device_link_init and an associated STA. */
+/* Open /api/device/v1/ws. Requires device_link_init and an associated STA.
+ * Tries the NVS last-good URI, then a DNS-SD browse, then the compiled URI. */
 void device_link_connect(void);
+
+/* URI chosen for this attempt. The compiled URI is used until one is chosen. */
+int device_link_copy_ws_uri(char *dst, size_t dst_len);
 
 /* Latest manual line wins. Sent after the socket is authenticated. */
 int device_link_submit_text(const char *text);

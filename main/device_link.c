@@ -15,9 +15,12 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "lan_discover.h"
+#include "rf_discover.h"
 #include "rf_frames.h"
 #include "sdkconfig.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "rf_link";
@@ -32,8 +35,19 @@ typedef enum {
     CMD_HELLO,
     CMD_USER,
     CMD_PING,
-    CMD_STOP
+    CMD_STOP,
+    CMD_OPEN,
+    CMD_UP,
+    CMD_DOWN
 } cmd_kind_t;
+
+typedef struct {
+    uint8_t kind;
+    uint8_t attempt;
+} link_cmd_t;
+
+#define CONNECT_BUDGET_MS 15000
+#define ACTIVE_URI_CAP 256
 
 static QueueHandle_t s_q;
 static SemaphoreHandle_t s_mu;
@@ -42,12 +56,25 @@ static char s_header[TOKEN_CAP + 32];
 static char s_pending[PENDING_CAP];
 static char s_rx[RX_CAP];
 static char s_tx[TX_CAP];
+static char s_active_uri[ACTIVE_URI_CAP];
+static char s_nvs_uri[RF_DISCOVER_URI_CAP];
+static char s_found_uri[RF_DISCOVER_URI_CAP];
 static int s_has_pending;
 static int s_canned_done;
 static volatile int s_authed;
 static volatile int s_fatal;
 static volatile int s_rx_drop;
+static volatile int s_quiet;
+static volatile uint8_t s_attempt;
 static int s_started;
+static int s_connecting;
+static int s_restart;
+static int s_pause;
+static int s_have_nvs;
+static int s_nvs_failed;
+static rf_browse_state_t s_browse;
+static rf_disc_step_t s_step;
+static TickType_t s_connect_tick;
 static device_link_audio_fn s_audio_fn;
 
 static void show_worried(void) {
@@ -55,16 +82,22 @@ static void show_worried(void) {
     face_view_set_cue(RF_CUE_NONE);
 }
 
-static int queue_cmd(cmd_kind_t kind) {
+static int queue_cmd_attempt(cmd_kind_t kind, int attempt) {
+    link_cmd_t cmd;
     if (!s_q || (s_fatal && kind != CMD_STOP)) {
         return -1;
     }
-    cmd_kind_t cmd = kind;
+    cmd.kind = (uint8_t)kind;
+    cmd.attempt = (uint8_t)attempt;
     if (xQueueSend(s_q, &cmd, 0) != pdTRUE) {
         ESP_LOGW(TAG, "command queue full");
         return -1;
     }
     return 0;
+}
+
+static int queue_cmd(cmd_kind_t kind) {
+    return queue_cmd_attempt(kind, 0);
 }
 
 static void handle_text(const char *json, int len) {
@@ -132,6 +165,9 @@ static void on_ws(void *args, esp_event_base_t base, int32_t id, void *data) {
         ESP_LOGI(TAG, "socket open");
         s_authed = 0;
         face_view_set(RF_EMOTION_THINKING);
+        if (!s_quiet) {
+            queue_cmd_attempt(CMD_UP, s_attempt);
+        }
 #if CONFIG_RUSTFOX_AUTH_FIRST_FRAME
         queue_cmd(CMD_AUTH);
 #endif
@@ -143,6 +179,9 @@ static void on_ws(void *args, esp_event_base_t base, int32_t id, void *data) {
         if (!s_fatal) {
             show_worried();
         }
+        if (!s_quiet && !s_fatal) {
+            queue_cmd_attempt(CMD_DOWN, s_attempt);
+        }
         return;
     }
     if (id == WEBSOCKET_EVENT_ERROR) {
@@ -151,6 +190,10 @@ static void on_ws(void *args, esp_event_base_t base, int32_t id, void *data) {
         ESP_LOGW(TAG, "socket error handshake_status=%d", status);
         if (status == 401) {
             device_link_note_unauthorized();
+            return;
+        }
+        if (!s_quiet && !s_fatal) {
+            queue_cmd_attempt(CMD_DOWN, s_attempt);
         }
         return;
     }
@@ -212,11 +255,218 @@ static void send_user(const char *text) {
     }
 }
 
+static const char *step_name(rf_disc_step_t step) {
+    if (step == RF_DISC_STEP_NVS) {
+        return "nvs";
+    }
+    if (step == RF_DISC_STEP_DISCOVERED) {
+        return "dns-sd";
+    }
+    if (step == RF_DISC_STEP_COMPILED) {
+        return "compiled";
+    }
+    return "browse";
+}
+
+static void close_socket(void) {
+    esp_websocket_client_handle_t client;
+    s_quiet = 1;
+    s_connecting = 0;
+    client = s_client;
+    s_client = NULL;
+    if (client) {
+        esp_websocket_client_stop(client);
+        esp_websocket_client_destroy(client);
+    }
+    s_quiet = 0;
+}
+
+static int set_active_uri(const char *uri) {
+    size_t n;
+    if (!uri || !s_mu) {
+        return -1;
+    }
+    n = strlen(uri);
+    if (n == 0 || n >= sizeof(s_active_uri)) {
+        return -1;
+    }
+    xSemaphoreTake(s_mu, portMAX_DELAY);
+    memcpy(s_active_uri, uri, n + 1);
+    xSemaphoreGive(s_mu);
+    return 0;
+}
+
+static void note_attempt_failed(void) {
+    if (s_step == RF_DISC_STEP_NVS) {
+        s_nvs_failed = 1;
+        return;
+    }
+    if (s_step == RF_DISC_STEP_DISCOVERED) {
+        s_browse = RF_BROWSE_CONNECT_FAILED;
+        return;
+    }
+    s_nvs_failed = 0;
+    s_browse = RF_BROWSE_NOT_TRIED;
+    s_pause = 1;
+}
+
+static int start_socket(void) {
+    const char *uri = s_active_uri;
+    const char *token = CONFIG_RUSTFOX_DEVICE_TOKEN;
+    esp_websocket_client_config_t cfg = {
+        .uri = uri,
+        .buffer_size = 4096,
+        .task_stack = 6144,
+        .disable_auto_reconnect = true,
+        .network_timeout_ms = 10000,
+        .ping_interval_sec = 30,
+        .user_agent = "rustfox-esp32-c6/0.1.0",
+    };
+#if CONFIG_RUSTFOX_AUTH_HEADER
+    int wrote = snprintf(s_header, sizeof(s_header), "Authorization: Bearer %s\r\n", token);
+    if (wrote < 0 || (size_t)wrote >= sizeof(s_header)) {
+        ESP_LOGE(TAG, "auth header does not fit");
+        return -1;
+    }
+    cfg.headers = s_header;
+    ESP_LOGI(TAG, "auth via Authorization header (token not logged, %u bytes)", (unsigned)strlen(token));
+#else
+    ESP_LOGI(TAG, "auth via first frame (token not logged, %u bytes)", (unsigned)strlen(token));
+#endif
+    if (strncmp(uri, "wss://", 6) == 0) {
+        cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    }
+    s_client = esp_websocket_client_init(&cfg);
+    if (!s_client) {
+        ESP_LOGE(TAG, "websocket init failed");
+        return -1;
+    }
+    esp_websocket_register_events(s_client, WEBSOCKET_EVENT_ANY, on_ws, NULL);
+    if (esp_websocket_client_start(s_client) != ESP_OK) {
+        ESP_LOGE(TAG, "websocket start failed");
+        esp_websocket_client_destroy(s_client);
+        s_client = NULL;
+        return -1;
+    }
+    ESP_LOGI(TAG, "connecting %s via %s", uri, step_name(s_step));
+    return 0;
+}
+
+/* 0 when a socket is opening, -1 to try the next candidate, -2 to stop. */
+static int open_attempt(void) {
+    const char *uri = CONFIG_RUSTFOX_WS_URI;
+    rf_disc_step_t step = RF_DISC_STEP_COMPILED;
+    uint8_t attempt;
+    if (s_fatal) {
+        return -2;
+    }
+    if (s_pause) {
+        s_pause = 0;
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        if (s_fatal) {
+            return -2;
+        }
+    }
+    close_socket();
+#if CONFIG_RUSTFOX_MDNS_DISCOVERY
+    s_have_nvs = lan_discover_load(s_nvs_uri, sizeof(s_nvs_uri));
+    step = rf_discover_next(s_have_nvs, s_nvs_failed, s_browse);
+    if (step == RF_DISC_STEP_BROWSE) {
+        int found = lan_discover_browse(s_found_uri, sizeof(s_found_uri)) == 0;
+        if (s_fatal) {
+            return -2;
+        }
+        s_browse = found ? RF_BROWSE_FOUND : RF_BROWSE_EMPTY;
+        step = rf_discover_next(s_have_nvs, s_nvs_failed, s_browse);
+    }
+    if (step == RF_DISC_STEP_NVS) {
+        uri = s_nvs_uri;
+    } else if (step == RF_DISC_STEP_DISCOVERED) {
+        uri = s_found_uri;
+    }
+#endif
+    s_step = step;
+    if (!uri || !uri[0] || strstr(uri, RF_WS_PATH) == NULL || set_active_uri(uri) != 0) {
+        ESP_LOGE(TAG, "URI must contain %s", RF_WS_PATH);
+        show_worried();
+        if (step == RF_DISC_STEP_NVS) {
+            s_nvs_failed = 1;
+            return -1;
+        }
+        if (step == RF_DISC_STEP_DISCOVERED) {
+            s_browse = RF_BROWSE_CONNECT_FAILED;
+            return -1;
+        }
+        return -2;
+    }
+    attempt = (uint8_t)(s_attempt + 1);
+    if (attempt == 0) {
+        attempt = 1;
+    }
+    s_attempt = attempt;
+    s_connecting = 1;
+    s_connect_tick = xTaskGetTickCount();
+    if (start_socket() != 0) {
+        s_connecting = 1;
+        note_attempt_failed();
+        return -1;
+    }
+    return 0;
+}
+
+static void handle_up(int attempt) {
+    if ((uint8_t)attempt != s_attempt || s_fatal) {
+        return;
+    }
+    s_connecting = 0;
+    if (rf_discover_cache_on_success(s_step) && lan_discover_store(s_active_uri) == 0) {
+        s_have_nvs = 1;
+    }
+    s_nvs_failed = 0;
+    s_browse = RF_BROWSE_NOT_TRIED;
+}
+
+static void handle_down(int attempt) {
+    int failed;
+    if ((uint8_t)attempt != s_attempt || s_fatal) {
+        return;
+    }
+    failed = s_connecting;
+    close_socket();
+    if (failed) {
+        note_attempt_failed();
+    } else {
+        s_nvs_failed = 0;
+        s_browse = RF_BROWSE_NOT_TRIED;
+    }
+    s_restart = 1;
+}
+
 static void link_task(void *arg) {
     (void)arg;
-    const TickType_t wait = pdMS_TO_TICKS(CONFIG_RUSTFOX_PING_INTERVAL_MS);
     for (;;) {
-        cmd_kind_t cmd = 0;
+        link_cmd_t cmd;
+        TickType_t wait = pdMS_TO_TICKS(CONFIG_RUSTFOX_PING_INTERVAL_MS);
+        if (s_restart && !s_fatal) {
+            int rc;
+            s_restart = 0;
+            rc = open_attempt();
+            if (rc == -1) {
+                s_restart = 1;
+            }
+            continue;
+        }
+        if (s_connecting) {
+            TickType_t elapsed = xTaskGetTickCount() - s_connect_tick;
+            TickType_t budget = pdMS_TO_TICKS(CONNECT_BUDGET_MS);
+            if (elapsed >= budget) {
+                handle_down(s_attempt);
+                continue;
+            }
+            if (budget - elapsed < wait) {
+                wait = budget - elapsed;
+            }
+        }
         if (xQueueReceive(s_q, &cmd, wait) != pdTRUE) {
             if (s_authed && !s_fatal) {
                 int n = rf_encode_ping(s_tx, sizeof(s_tx));
@@ -226,19 +476,35 @@ static void link_task(void *arg) {
             }
             continue;
         }
-        if (cmd == CMD_STOP) {
+        if (cmd.kind == CMD_STOP) {
             s_fatal = 1;
             s_authed = 0;
+            s_connecting = 0;
+            s_restart = 0;
+            s_quiet = 1;
             if (s_client) {
                 esp_websocket_client_stop(s_client);
             }
+            s_quiet = 0;
             ESP_LOGE(TAG, "stopped after unauthorized");
+            continue;
+        }
+        if (cmd.kind == CMD_OPEN) {
+            s_restart = 1;
+            continue;
+        }
+        if (cmd.kind == CMD_UP) {
+            handle_up(cmd.attempt);
+            continue;
+        }
+        if (cmd.kind == CMD_DOWN) {
+            handle_down(cmd.attempt);
             continue;
         }
         if (s_fatal || !s_client) {
             continue;
         }
-        if (cmd == CMD_AUTH) {
+        if (cmd.kind == CMD_AUTH) {
             int n = rf_encode_auth(s_tx, sizeof(s_tx), CONFIG_RUSTFOX_DEVICE_TOKEN);
             if (n > 0) {
                 send_json(s_tx, n);
@@ -246,7 +512,7 @@ static void link_task(void *arg) {
             }
             continue;
         }
-        if (cmd == CMD_HELLO) {
+        if (cmd.kind == CMD_HELLO) {
             int n = rf_encode_device_hello(s_tx, sizeof(s_tx), CONFIG_RUSTFOX_DEVICE_ID,
                                            CONFIG_RUSTFOX_ROOM, CONFIG_RUSTFOX_FW_VERSION);
             if (n > 0 && send_json(s_tx, n) == 0) {
@@ -255,14 +521,14 @@ static void link_task(void *arg) {
             queue_cmd(CMD_USER);
             continue;
         }
-        if (cmd == CMD_PING) {
+        if (cmd.kind == CMD_PING) {
             int n = rf_encode_ping(s_tx, sizeof(s_tx));
             if (n > 0) {
                 send_json(s_tx, n);
             }
             continue;
         }
-        if (cmd != CMD_USER || !s_authed) {
+        if (cmd.kind != CMD_USER || !s_authed) {
             continue;
         }
         char local[PENDING_CAP];
@@ -292,13 +558,13 @@ void device_link_init(void) {
     if (s_q) {
         return;
     }
-    s_q = xQueueCreate(12, sizeof(cmd_kind_t));
+    s_q = xQueueCreate(12, sizeof(link_cmd_t));
     s_mu = xSemaphoreCreateMutex();
     if (!s_q || !s_mu) {
         ESP_LOGE(TAG, "queue init failed");
         return;
     }
-    if (xTaskCreate(link_task, "rf_link", 6144, NULL, 5, NULL) != pdPASS) {
+    if (xTaskCreate(link_task, "rf_link", 8192, NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "task failed");
     }
 }
@@ -329,11 +595,10 @@ int device_link_submit_text(const char *text) {
 }
 
 void device_link_connect(void) {
+    const char *token = CONFIG_RUSTFOX_DEVICE_TOKEN;
     if (s_started) {
         return;
     }
-    const char *uri = CONFIG_RUSTFOX_WS_URI;
-    const char *token = CONFIG_RUSTFOX_DEVICE_TOKEN;
     if (!s_q) {
         ESP_LOGE(TAG, "device_link_init was not called");
         return;
@@ -348,50 +613,33 @@ void device_link_connect(void) {
         show_worried();
         return;
     }
-    if (!uri[0] || strstr(uri, RF_WS_PATH) == NULL) {
-        ESP_LOGE(TAG, "URI must contain %s", RF_WS_PATH);
-        show_worried();
-        return;
-    }
-
-    esp_websocket_client_config_t cfg = {
-        .uri = uri,
-        .buffer_size = 4096,
-        .task_stack = 6144,
-        .reconnect_timeout_ms = 5000,
-        .network_timeout_ms = 10000,
-        .ping_interval_sec = 30,
-        .user_agent = "rustfox-esp32-c6/0.1.0",
-    };
-#if CONFIG_RUSTFOX_AUTH_HEADER
-    int wrote = snprintf(s_header, sizeof(s_header), "Authorization: Bearer %s\r\n", token);
-    if (wrote < 0 || (size_t)wrote >= sizeof(s_header)) {
-        ESP_LOGE(TAG, "auth header does not fit");
-        return;
-    }
-    cfg.headers = s_header;
-    ESP_LOGI(TAG, "auth via Authorization header (token not logged, %u bytes)",
-             (unsigned)strlen(token));
-#else
-    ESP_LOGI(TAG, "auth via first frame (token not logged, %u bytes)", (unsigned)strlen(token));
-#endif
-    if (strncmp(uri, "wss://", 6) == 0) {
-        cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    }
-
-    s_client = esp_websocket_client_init(&cfg);
-    if (!s_client) {
-        ESP_LOGE(TAG, "websocket init failed");
-        return;
-    }
-    esp_websocket_register_events(s_client, WEBSOCKET_EVENT_ANY, on_ws, NULL);
-    esp_err_t err = esp_websocket_client_start(s_client);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "websocket start failed: %s", esp_err_to_name(err));
-        return;
-    }
     s_started = 1;
-    ESP_LOGI(TAG, "connecting %s", uri);
+#if CONFIG_RUSTFOX_MDNS_DISCOVERY
+    lan_discover_prepare();
+#endif
+    queue_cmd(CMD_OPEN);
+}
+
+int device_link_copy_ws_uri(char *dst, size_t dst_len) {
+    const char *src = CONFIG_RUSTFOX_WS_URI;
+    int n;
+    if (!dst || dst_len == 0) {
+        return -1;
+    }
+    if (s_mu) {
+        xSemaphoreTake(s_mu, portMAX_DELAY);
+        if (s_active_uri[0]) {
+            src = s_active_uri;
+        }
+        n = snprintf(dst, dst_len, "%s", src);
+        xSemaphoreGive(s_mu);
+    } else {
+        n = snprintf(dst, dst_len, "%s", src);
+    }
+    if (n < 0 || (size_t)n >= dst_len) {
+        return -1;
+    }
+    return 0;
 }
 
 int device_link_session_ok(void) {

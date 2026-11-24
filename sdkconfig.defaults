@@ -17,3 +17,10 @@ CONFIG_CODEC_ES7210_SUPPORT=y
 # CONFIG_CODEC_ES8388_SUPPORT is not set
 # CONFIG_CODEC_TAS5805M_SUPPORT is not set
 # CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE is not set
+# DNS-SD browse of _rustfox-device._tcp. The board does not advertise.
+# One STA interface, no console CLI, internal RAM only (the C6 has no PSRAM).
+CONFIG_MDNS_MAX_INTERFACES=1
+CONFIG_MDNS_MAX_SERVICES=1
+CONFIG_MDNS_ACTION_QUEUE_LEN=8
+# CONFIG_MDNS_ENABLE_CONSOLE_CLI is not set
+# CONFIG_MDNS_PREDEF_NETIF_AP is not set

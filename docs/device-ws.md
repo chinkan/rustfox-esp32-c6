@@ -22,6 +22,38 @@ Use `ws://` on loopback, Tailscale, or a trusted LAN. Use `wss://` when TLS
 terminates at a reverse proxy in front of RustFox. RustFox does not terminate
 TLS. A bare public WebSocket is not recommended.
 
+## Finding the socket
+
+The compiled `CONFIG_RUSTFOX_WS_URI` is the fallback. It is not the address
+the board keeps. On each connect, and again after a connect failure:
+
+1. Open the last-good URI in NVS (`rf_link` / `ws_uri`) when it is present.
+2. Otherwise, or if that connect fails, browse DNS-SD `_rustfox-device._tcp`
+   for up to the configured timeout (default 2.5 s). The SRV port is the
+   portal and Device WebSocket port. Required TXT is `path=/api/device/v1/ws`
+   and `proto=1`. Optional TXT `audio=/api/device/v1/audio` may be present.
+3. If the browse fails or times out, or the discovered socket does not open,
+   use `CONFIG_RUSTFOX_WS_URI`.
+
+A browse result becomes `ws://<ipv4>:<port>/api/device/v1/ws` only from an A
+record, an SRV port, and that TXT. Loopback, `172.x` (WSL NAT and similar),
+APIPA `169.254.0.0/16`, and Tailscale `100.x` are not used. IPv6 is ignored.
+The default instance name is `rustfox`. A different configured instance is
+preferred when it is visible; otherwise `rustfox`; otherwise the first
+connectable result. After that socket connects, the URI replaces the NVS
+value. The next reconnect tries NVS again and browses only after that fails.
+The compiled URI is not written to NVS.
+
+No device token or other secret is read from mDNS. Audio still uses the host
+and port of the Device WebSocket URI that was chosen, with `ws://` rewritten
+to `http://` and the path `/api/device/v1/audio` (ADR-0066).
+
+The mDNS client stays initialized after the first browse. The firmware logs
+free heap around `mdns_init` and the browse. `sdkconfig.defaults` keeps that
+task on internal RAM, one interface, one service slot, a short action queue,
+and no mDNS console. This repository's host tests do not run on the ESP32-C6,
+so they do not record that heap number.
+
 ## Auth
 
 Per-device token from Portal Settings → Devices. It is not the portal login
@@ -108,8 +140,9 @@ partition. Release uploads one WAV:
 {"type":"assistant_audio","id":"clip-1","url":"/api/device/v1/audio/clip-1","sample_rate":16000,"channels":1,"encoding":"s16le"}
 ```
 
-The origin is the Device WebSocket URI with `ws://` rewritten to `http://` and
-`wss://` rewritten to `https://`. The host transcribes the WAV and starts the
+The origin is the Device WebSocket URI the board is using (NVS, DNS-SD, or the
+compiled fallback), with `ws://` rewritten to `http://` and `wss://` rewritten
+to `https://`. The host transcribes the WAV and starts the
 turn from that transcript. Holding again while PCM is playing stops playback
 and starts a new recording. A drop of Wi-Fi or the socket during the hold
 discards that clip and shows the worried face. `unauthorized` still stops

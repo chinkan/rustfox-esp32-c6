@@ -5,11 +5,13 @@ CC ?= gcc
 CFLAGS := -std=c11 -Wall -Wextra -Werror -Wpedantic \
 	-I../../components/rf_frames/include \
 	-I../../components/rf_face/include \
-	-I../../components/rf_talk/include
+	-I../../components/rf_talk/include \
+	-I../../components/rf_discover/include
 
 SRCS := ../../components/rf_frames/rf_frames.c \
 	../../components/rf_face/rf_face.c \
 	../../components/rf_talk/rf_talk.c \
+	../../components/rf_discover/rf_discover.c \
 	test_main.c
 
 .PHONY: test clean

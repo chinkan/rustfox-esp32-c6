@@ -164,7 +164,11 @@ static int auth_header(char *dst, size_t dst_len) {
 }
 
 static int origin_of(char *dst, size_t dst_len) {
-    return rf_audio_origin_from_ws(CONFIG_RUSTFOX_WS_URI, dst, dst_len);
+    char uri[256];
+    if (device_link_copy_ws_uri(uri, sizeof(uri)) != 0) {
+        return -1;
+    }
+    return rf_audio_origin_from_ws(uri, dst, dst_len);
 }
 
 static void note_status(int status) {

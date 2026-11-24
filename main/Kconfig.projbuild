@@ -18,7 +18,34 @@ config RUSTFOX_WS_URI
     help
         Must include /api/device/v1/ws. Use ws:// on loopback, Tailscale, or a
         trusted LAN. Use wss:// when TLS terminates at a reverse proxy.
-        Bare public WebSocket is not recommended.
+        Bare public WebSocket is not recommended. This URI is the fallback
+        when NVS has no last-good address and DNS-SD does not answer. It is
+        not the durable address.
+
+config RUSTFOX_MDNS_DISCOVERY
+    bool "Find Device WebSocket on the LAN with DNS-SD"
+    default y
+    help
+        Browse _rustfox-device._tcp. A URI that completes a Device WebSocket
+        connection from that browse is stored in NVS and tried first on the
+        next boot. The compiled URI above is used when nothing is cached and
+        no service is found. mDNS TXT is not a place for the device token.
+
+config RUSTFOX_MDNS_INSTANCE
+    string "Preferred DNS-SD instance"
+    depends on RUSTFOX_MDNS_DISCOVERY
+    default "rustfox"
+    help
+        When this name is set to something other than rustfox, that instance
+        is preferred. Otherwise the instance named rustfox is preferred, then
+        the first result with a connectable IPv4 and TXT path=/api/device/v1/ws
+        and proto=1.
+
+config RUSTFOX_MDNS_TIMEOUT_MS
+    int "DNS-SD browse timeout (ms)"
+    depends on RUSTFOX_MDNS_DISCOVERY
+    default 2500
+    range 500 8000
 
 choice RUSTFOX_AUTH_MODE
     prompt "Device token transport"
