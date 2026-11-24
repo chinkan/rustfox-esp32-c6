@@ -20,8 +20,9 @@ extern "C" {
 #define RF_DISCOVER_AUDIO_PATH "/api/device/v1/audio"
 #define RF_DISCOVER_URI_CAP 160
 
-/* 1 when dotted is a connectable IPv4. Rejects loopback, 172.x (WSL NAT and
- * similar), APIPA, Tailscale 100.x, and the other non-LAN classes. */
+/* 1 when dotted is a connectable IPv4. Rejects loopback, APIPA, Tailscale
+ * 100.x, unspecified, and multicast. A 172.x address is allowed; an
+ * unreachable WSL or Hyper-V address fails when the socket connect fails. */
 int rf_discover_ipv4_ok(const char *dotted);
 
 /* ws://<ipv4>:<port><path> for a connectable A record, a SRV port, and the

@@ -71,10 +71,12 @@ int rf_discover_ipv4_ok(const char *dotted) {
     if (parse_ipv4(dotted, o) != 0) {
         return 0;
     }
-    /* 0/8 is unspecified. 127/8 is loopback. 172/8 is WSL, Hyper-V, and
-     * Docker NAT ("172.x"). 169.254/16 is APIPA. 100/8 is Tailscale
-     * ("100.x"). 224/4 and above are multicast or reserved. */
-    if (o[0] == 0 || o[0] == 127 || o[0] == 100 || o[0] == 172) {
+    /* 0/8 is unspecified. 127/8 is loopback. 169.254/16 is APIPA.
+     * 100/8 is Tailscale ("100.x"). 224/4 and above are multicast or
+     * reserved. 172/8 is not rejected: a real LAN may be 172.16.0.0/12,
+     * and the rest of 172/8 is usable too. A WSL
+     * or Hyper-V 172.x that is still advertised fails at connect time. */
+    if (o[0] == 0 || o[0] == 127 || o[0] == 100) {
         return 0;
     }
     if (o[0] == 169 && o[1] == 254) {

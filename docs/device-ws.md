@@ -36,8 +36,11 @@ the board keeps. On each connect, and again after a connect failure:
    use `CONFIG_RUSTFOX_WS_URI`.
 
 A browse result becomes `ws://<ipv4>:<port>/api/device/v1/ws` only from an A
-record, an SRV port, and that TXT. Loopback, `172.x` (WSL NAT and similar),
-APIPA `169.254.0.0/16`, and Tailscale `100.x` are not used. IPv6 is ignored.
+record, an SRV port, and that TXT. Loopback, APIPA `169.254.0.0/16`, and
+Tailscale `100.x` are not used. A `172.x` address is used, including a LAN
+in `172.16.0.0/12`. IPv6 is ignored. An unreachable address fails the socket
+connect, and the board then tries the next candidate.
+
 The default instance name is `rustfox`. A different configured instance is
 preferred when it is visible; otherwise `rustfox`; otherwise the first
 connectable result. After that socket connects, the URI replaces the NVS

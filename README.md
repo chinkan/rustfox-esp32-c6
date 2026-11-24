@@ -108,7 +108,7 @@ Menu path: **RustFox ESP32-C6**.
 
 `sdkconfig` holds the SSID, the password, and the device token. `.gitignore` lists `sdkconfig` and `sdkconfig.old`. Do not commit them. The log records the token length and leaves the token itself out.
 
-The board tries a last-good URI saved in NVS, then browses `_rustfox-device._tcp` on the LAN, then the compiled URI. A discovered socket is `ws://<ipv4>:<port>/api/device/v1/ws`. Loopback, `172.x`, APIPA, and Tailscale `100.x` addresses are ignored, and a device token is never taken from mDNS. After that socket connects, the URI is saved. The next connect tries the saved URI first and browses again only if that connect fails. The default host `192.168.1.10` and port `8080` stay only as the compiled fallback.
+The board tries a last-good URI saved in NVS, then browses `_rustfox-device._tcp` on the LAN, then the compiled URI. A discovered socket is `ws://<ipv4>:<port>/api/device/v1/ws`. Loopback, APIPA, and Tailscale `100.x` addresses are ignored. A `172.x` LAN address is used. A device token is never taken from mDNS. After that socket connects, the URI is saved. The next connect tries the saved URI first and browses again only if that connect fails. The default host `192.168.1.10` and port `8080` stay only as the compiled fallback.
 
 ### Build, flash, and monitor
 
@@ -194,7 +194,7 @@ The MIT widget [0015/lvgl_kawaii_face](https://github.com/0015/lvgl_kawaii_face)
 - Display updates are 16-line stripes. The fox is drawn to fill the 480×480 panel. A full-panel framebuffer is not allocated.
 - Incoming text frames larger than 8 KiB are dropped. The log and the face keep 1023 bytes of `text`. RustFox accepts a frame up to 256 KiB and a `user_text` of up to 16000 Unicode scalars. A monitor line longer than 383 bytes is dropped.
 - This client sends JSON text frames on the Device WebSocket. It ignores binary frames. Audio upload and download use HTTP on the same host and port as the Device WebSocket URI that was chosen.
-- DNS-SD does not use an advertised loopback, `172.x`, APIPA, or `100.x` address, and it does not read a device token from TXT. The serial log prints free heap when mDNS starts and when a browse finishes. Host tests do not measure that heap.
+- DNS-SD does not use an advertised loopback, APIPA, or `100.x` address, and it does not read a device token from TXT. A `172.x` address, including `172.16.0.0/12`, is eligible. The serial log prints free heap when mDNS starts and when a browse finishes. Host tests do not measure that heap.
 
 ## License
 
