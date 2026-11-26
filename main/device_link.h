@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <stddef.h>
+
 /* Create the send queue. Safe to call before Wi-Fi is up. */
 void device_link_init(void);
 
