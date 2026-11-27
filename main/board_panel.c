@@ -10,7 +10,16 @@
 // The Waveshare product page names the glass controller CO5300. That MIT
 // board file drives it with the SH8601 QSPI command set. The upstream
 // 0x2A/0x2B window is 410x502 (the 2.06" geometry). This file programs
-// 0x0000..0x01DF for the published 480x480 panel. Confirm on the bench.
+// 0x0000..0x01DF for the published 480x480 panel.
+//
+// esp_lcd_sh8601 2.0.1 sends COLMOD before the vendor list. This list starts
+// with sleep-out (0x11). The CO5300 powers up in 24-bit mode (COLMOD 0x77)
+// and ignores the pixel format until after sleep-out, so 0x3A=0x55 is sent
+// again here. RGB565 bytes read as RGB888 turn RF_FACE_RGB565(26,18,12)
+// into about (129,24,129), the same purple field as a byte-swapped 16-bit
+// read of that color. QSPI color bytes are not swapped by the SPI IO
+// (lcd_param_bits is 8). The blit puts the RGB565 high byte first.
+// MADCTL stays 0xA0; 0x30 was not proven on this glass. Confirm on the bench.
 
 #include "board_panel.h"
 
@@ -40,6 +49,8 @@ static const uint8_t k_c4[] = {0x80};
 static const uint8_t k_44[] = {0x01, 0xD1};
 static const uint8_t k_35[] = {0x00};
 static const uint8_t k_36[] = {0xA0};
+/* 16-bit RGB565. IFPF and VIPF are both 0b101. Sent after sleep-out. */
+static const uint8_t k_3a[] = {0x55};
 static const uint8_t k_53[] = {0x20};
 static const uint8_t k_63[] = {0xFF};
 static const uint8_t k_2a[] = {0x00, 0x00, 0x01, 0xDF};
@@ -48,6 +59,7 @@ static const uint8_t k_51[] = {0xFF};
 
 static const sh8601_lcd_init_cmd_t k_init[] = {
     {0x11, k_00, 0, 120},
+    {0x3A, k_3a, 1, 0},
     {0xC4, k_c4, 1, 0},
     {0x44, k_44, 2, 0},
     {0x35, k_35, 1, 0},
@@ -169,6 +181,19 @@ static esp_err_t panel_power_cycle(void) {
     return ESP_OK;
 }
 
+/* High byte first. The SPI IO sends the buffer in address order and does not swap it. */
+static void stripe_swap_rgb565(int pixels) {
+    for (int i = 0; i < pixels; i++) {
+        uint16_t color = s_stripe[i];
+        s_stripe[i] = (uint16_t)((color << 8) | (color >> 8));
+    }
+}
+
+static esp_err_t blit_stripe(int y, int rows) {
+    stripe_swap_rgb565(BOARD_LCD_H_RES * rows);
+    return esp_lcd_panel_draw_bitmap(s_panel, 0, y, BOARD_LCD_H_RES, y + rows, s_stripe);
+}
+
 static esp_err_t clear_panel(void) {
     memset(s_stripe, 0, sizeof(s_stripe));
     for (int y = 0; y < BOARD_LCD_V_RES; y += STRIPE_ROWS) {
@@ -176,7 +201,7 @@ static esp_err_t clear_panel(void) {
         if (y + rows > BOARD_LCD_V_RES) {
             rows = BOARD_LCD_V_RES - y;
         }
-        esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, BOARD_LCD_H_RES, y + rows, s_stripe);
+        esp_err_t err = blit_stripe(y, rows);
         if (err != ESP_OK) {
             return err;
         }
@@ -308,7 +333,7 @@ void board_panel_draw(const rf_face_t *face) {
         if (rf_face_render_stripe(face, s_stripe, BOARD_LCD_H_RES, y, rows, BOARD_LCD_V_RES) != 0) {
             return;
         }
-        esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, BOARD_LCD_H_RES, y + rows, s_stripe);
+        esp_err_t err = blit_stripe(y, rows);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "blit failed: %s", esp_err_to_name(err));
             return;
