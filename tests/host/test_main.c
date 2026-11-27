@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 chinkan.ai
 
+#include "rf_discover.h"
 #include "rf_face.h"
 #include "rf_frames.h"
 #include "rf_talk.h"
@@ -385,10 +386,192 @@ static void test_talk(void) {
     EXPECT(rf_audio_path_ok("https://other/api/device/v1/audio/abc") == 0);
 }
 
+static rf_discover_service_t svc(const char *name, const char **ips, size_t nips, int port,
+                                 const char *path, const char *proto) {
+    rf_discover_service_t s;
+    s.instance = name;
+    s.ipv4 = (const char **)ips;
+    s.ipv4_count = nips;
+    s.port = port;
+    s.path = path;
+    s.proto_txt = proto;
+    return s;
+}
+
+static void test_discover(void) {
+    EXPECT(rf_discover_ipv4_ok("192.168.1.10") == 1);
+    EXPECT(rf_discover_ipv4_ok("10.1.2.3") == 1);
+    EXPECT(rf_discover_ipv4_ok("8.8.8.8") == 1);
+    EXPECT(rf_discover_ipv4_ok("172.16.5.8") == 1);
+    EXPECT(rf_discover_ipv4_ok("172.16.5.1") == 1);
+    EXPECT(rf_discover_ipv4_ok("172.17.0.2") == 1);
+    EXPECT(rf_discover_ipv4_ok("172.31.255.255") == 1);
+    EXPECT(rf_discover_ipv4_ok("172.0.0.1") == 1);
+    EXPECT(rf_discover_ipv4_ok("172.15.255.255") == 1);
+    EXPECT(rf_discover_ipv4_ok("172.32.1.1") == 1);
+    EXPECT(rf_discover_ipv4_ok("172.255.9.9") == 1);
+    EXPECT(rf_discover_ipv4_ok("127.0.0.1") == 0);
+    EXPECT(rf_discover_ipv4_ok("127.0.0.2") == 0);
+    EXPECT(rf_discover_ipv4_ok("169.254.1.1") == 0);
+    EXPECT(rf_discover_ipv4_ok("169.254.0.1") == 0);
+    EXPECT(rf_discover_ipv4_ok("100.64.1.2") == 0);
+    EXPECT(rf_discover_ipv4_ok("100.99.0.1") == 0);
+    EXPECT(rf_discover_ipv4_ok("100.1.1.1") == 0);
+    EXPECT(rf_discover_ipv4_ok("0.0.0.0") == 0);
+    EXPECT(rf_discover_ipv4_ok("224.0.0.1") == 0);
+    EXPECT(rf_discover_ipv4_ok("255.255.255.255") == 0);
+    EXPECT(rf_discover_ipv4_ok("192.168.1") == 0);
+    EXPECT(rf_discover_ipv4_ok("192.168.1.10.1") == 0);
+    EXPECT(rf_discover_ipv4_ok("not-an-ip") == 0);
+    EXPECT(rf_discover_ipv4_ok(NULL) == 0);
+
+    char uri[RF_DISCOVER_URI_CAP];
+    EXPECT(rf_discover_build_uri("192.168.1.50", 8090, RF_DISCOVER_PATH, uri, sizeof(uri)) == 0);
+    EXPECT(strcmp(uri, "ws://192.168.1.50:8090/api/device/v1/ws") == 0);
+    EXPECT(rf_discover_cached_uri_ok(uri) == 1);
+    EXPECT(rf_discover_build_uri("10.1.2.3", 80, RF_DISCOVER_PATH, uri, sizeof(uri)) == 0);
+    EXPECT(strcmp(uri, "ws://10.1.2.3:80/api/device/v1/ws") == 0);
+    EXPECT(rf_discover_build_uri("172.16.5.8", 8090, RF_DISCOVER_PATH, uri, sizeof(uri)) == 0);
+    EXPECT(strcmp(uri, "ws://172.16.5.8:8090/api/device/v1/ws") == 0);
+    EXPECT(rf_discover_cached_uri_ok(uri) == 1);
+    EXPECT(rf_discover_build_uri("100.64.0.1", 8090, RF_DISCOVER_PATH, uri, sizeof(uri)) != 0);
+    EXPECT(rf_discover_build_uri("127.0.0.1", 8090, RF_DISCOVER_PATH, uri, sizeof(uri)) != 0);
+    EXPECT(rf_discover_build_uri("169.254.4.4", 8090, RF_DISCOVER_PATH, uri, sizeof(uri)) != 0);
+    EXPECT(rf_discover_build_uri("192.168.1.50", 0, RF_DISCOVER_PATH, uri, sizeof(uri)) != 0);
+    EXPECT(rf_discover_build_uri("192.168.1.50", 65536, RF_DISCOVER_PATH, uri, sizeof(uri)) != 0);
+    EXPECT(rf_discover_build_uri("192.168.1.50", 8090, "/other", uri, sizeof(uri)) != 0);
+    EXPECT(rf_discover_build_uri("192.168.1.50", 8090, RF_DISCOVER_PATH, uri, 8) != 0);
+
+    EXPECT(rf_discover_cached_uri_ok("ws://127.0.0.1:8090/api/device/v1/ws") == 0);
+    EXPECT(rf_discover_cached_uri_ok("ws://172.16.0.2:8090/api/device/v1/ws") == 1);
+    EXPECT(rf_discover_cached_uri_ok("ws://172.16.5.8:8090/api/device/v1/ws") == 1);
+    EXPECT(rf_discover_cached_uri_ok("ws://172.0.0.1:8090/api/device/v1/ws") == 1);
+    EXPECT(rf_discover_cached_uri_ok("ws://172.32.1.1:8090/api/device/v1/ws") == 1);
+    EXPECT(rf_discover_cached_uri_ok("ws://100.64.0.1:8090/api/device/v1/ws") == 0);
+    EXPECT(rf_discover_cached_uri_ok("ws://169.254.1.1:8090/api/device/v1/ws") == 0);
+    EXPECT(rf_discover_cached_uri_ok("wss://192.168.1.20:8090/api/device/v1/ws") == 0);
+    EXPECT(rf_discover_cached_uri_ok("ws://192.168.1.20:8090/other") == 0);
+    EXPECT(rf_discover_cached_uri_ok("ws://192.168.1.20/api/device/v1/ws") == 0);
+    EXPECT(rf_discover_cached_uri_ok("") == 0);
+
+    char path[64];
+    char proto[8];
+    char audio[64];
+    const rf_discover_kv_t with_secret[] = {
+        {"token", "super-secret-token"},
+        {"path", RF_DISCOVER_PATH},
+        {"proto", RF_DISCOVER_PROTO_TXT},
+        {"audio", RF_DISCOVER_AUDIO_PATH},
+    };
+    EXPECT(rf_discover_apply_txt(with_secret, 4, path, sizeof(path), proto, sizeof(proto), audio,
+                                 sizeof(audio)) == 0);
+    EXPECT(strcmp(path, RF_DISCOVER_PATH) == 0);
+    EXPECT(strcmp(proto, RF_DISCOVER_PROTO_TXT) == 0);
+    EXPECT(strcmp(audio, RF_DISCOVER_AUDIO_PATH) == 0);
+    EXPECT(strstr(path, "super-secret-token") == NULL);
+    EXPECT(strstr(proto, "super-secret-token") == NULL);
+    EXPECT(strstr(audio, "super-secret-token") == NULL);
+
+    const rf_discover_kv_t no_audio[] = {
+        {"path", RF_DISCOVER_PATH},
+        {"proto", "1"},
+        {"password", "do-not-keep"},
+    };
+    memset(audio, 'x', sizeof(audio));
+    EXPECT(rf_discover_apply_txt(no_audio, 3, path, sizeof(path), proto, sizeof(proto), audio,
+                                 sizeof(audio)) == 0);
+    EXPECT(audio[0] == '\0');
+    EXPECT(strstr(path, "do-not-keep") == NULL);
+
+    const rf_discover_kv_t foreign_audio[] = {
+        {"path", RF_DISCOVER_PATH},
+        {"proto", "1"},
+        {"audio", "http://evil.example/secret-token"},
+    };
+    EXPECT(rf_discover_apply_txt(foreign_audio, 3, path, sizeof(path), proto, sizeof(proto), audio,
+                                 sizeof(audio)) == 0);
+    EXPECT(audio[0] == '\0');
+
+    const rf_discover_kv_t bad_proto[] = {
+        {"path", RF_DISCOVER_PATH},
+        {"proto", "2"},
+    };
+    EXPECT(rf_discover_apply_txt(bad_proto, 2, path, sizeof(path), proto, sizeof(proto), audio,
+                                 sizeof(audio)) != 0);
+
+    EXPECT(rf_discover_build_uri("192.168.1.50", 8090, RF_DISCOVER_PATH, uri, sizeof(uri)) == 0);
+    char origin[80];
+    EXPECT(rf_audio_origin_from_ws(uri, origin, sizeof(origin)) == 0);
+    EXPECT(strcmp(origin, "http://192.168.1.50:8090") == 0);
+    char upload[128];
+    EXPECT(snprintf(upload, sizeof(upload), "%s%s", origin, RF_AUDIO_POST_PATH) > 0);
+    EXPECT(strcmp(upload, "http://192.168.1.50:8090/api/device/v1/audio") == 0);
+
+    const char *studio_ips[] = {"172.17.0.2", "10.0.0.8"};
+    const char *rustfox_ips[] = {"192.168.1.6"};
+    const char *other_ips[] = {"192.168.1.5"};
+    const char *bad_ips[] = {"100.64.0.2", "127.0.0.1"};
+    const char *mixed_ips[] = {"100.99.0.1", "169.254.8.8", "127.0.0.1", "172.16.5.8"};
+    rf_discover_service_t many[4];
+    many[0] = svc("other", other_ips, 1, 8090, RF_DISCOVER_PATH, RF_DISCOVER_PROTO_TXT);
+    many[1] = svc("rustfox", rustfox_ips, 1, 8090, RF_DISCOVER_PATH, RF_DISCOVER_PROTO_TXT);
+    many[2] = svc("studio", studio_ips, 2, 8090, RF_DISCOVER_PATH, RF_DISCOVER_PROTO_TXT);
+    many[3] = svc("skip", bad_ips, 2, 8090, RF_DISCOVER_PATH, RF_DISCOVER_PROTO_TXT);
+
+    EXPECT(rf_discover_select(many, 4, "studio", uri, sizeof(uri)) == 2);
+    EXPECT(strcmp(uri, "ws://172.17.0.2:8090/api/device/v1/ws") == 0);
+    EXPECT(strstr(uri, "super-secret") == NULL);
+
+    EXPECT(rf_discover_select(many, 4, NULL, uri, sizeof(uri)) == 1);
+    EXPECT(strcmp(uri, "ws://192.168.1.6:8090/api/device/v1/ws") == 0);
+    EXPECT(rf_discover_select(many, 4, "", uri, sizeof(uri)) == 1);
+    EXPECT(rf_discover_select(many, 4, "rustfox", uri, sizeof(uri)) == 1);
+    EXPECT(rf_discover_select(many, 4, "RustFox", uri, sizeof(uri)) == 1);
+
+    many[1] = svc("rustfox._rustfox-device._tcp.local", mixed_ips, 4, 8091, RF_DISCOVER_PATH,
+                  RF_DISCOVER_PROTO_TXT);
+    EXPECT(rf_discover_select(many, 4, NULL, uri, sizeof(uri)) == 1);
+    EXPECT(strcmp(uri, "ws://172.16.5.8:8091/api/device/v1/ws") == 0);
+
+    many[1] = svc("rustfox", bad_ips, 2, 8090, RF_DISCOVER_PATH, RF_DISCOVER_PROTO_TXT);
+    EXPECT(rf_discover_select(many, 4, "studio", uri, sizeof(uri)) == 2);
+    EXPECT(rf_discover_select(many, 3, "missing", uri, sizeof(uri)) == 0);
+    EXPECT(strcmp(uri, "ws://192.168.1.5:8090/api/device/v1/ws") == 0);
+
+    many[0] = svc("rustfox", rustfox_ips, 1, 8090, "/api/device/v1/audio", RF_DISCOVER_PROTO_TXT);
+    many[1] = svc("alpha", other_ips, 1, 8090, RF_DISCOVER_PATH, "2");
+    many[2] = svc("beta", other_ips, 1, 8090, RF_DISCOVER_PATH, RF_DISCOVER_PROTO_TXT);
+    EXPECT(rf_discover_select(many, 3, NULL, uri, sizeof(uri)) == 2);
+    EXPECT(strcmp(uri, "ws://192.168.1.5:8090/api/device/v1/ws") == 0);
+
+    const char *first_ips[] = {"192.168.0.4"};
+    const char *second_ips[] = {"192.168.0.5"};
+    many[0] = svc("alpha", first_ips, 1, 8090, RF_DISCOVER_PATH, RF_DISCOVER_PROTO_TXT);
+    many[1] = svc("beta", second_ips, 1, 8090, RF_DISCOVER_PATH, RF_DISCOVER_PROTO_TXT);
+    EXPECT(rf_discover_select(many, 2, NULL, uri, sizeof(uri)) == 0);
+    EXPECT(strcmp(uri, "ws://192.168.0.4:8090/api/device/v1/ws") == 0);
+    EXPECT(rf_discover_select(many, 2, "beta", uri, sizeof(uri)) == 1);
+
+    EXPECT(rf_discover_next(1, 0, RF_BROWSE_NOT_TRIED) == RF_DISC_STEP_NVS);
+    EXPECT(rf_discover_cache_on_success(RF_DISC_STEP_NVS) == 0);
+    EXPECT(rf_discover_next(1, 1, RF_BROWSE_NOT_TRIED) == RF_DISC_STEP_BROWSE);
+    EXPECT(rf_discover_next(1, 1, RF_BROWSE_FOUND) == RF_DISC_STEP_DISCOVERED);
+    EXPECT(rf_discover_cache_on_success(RF_DISC_STEP_DISCOVERED) == 1);
+    EXPECT(rf_discover_next(1, 1, RF_BROWSE_CONNECT_FAILED) == RF_DISC_STEP_COMPILED);
+    EXPECT(rf_discover_cache_on_success(RF_DISC_STEP_COMPILED) == 0);
+    EXPECT(rf_discover_cache_on_success(RF_DISC_STEP_BROWSE) == 0);
+    EXPECT(rf_discover_next(0, 0, RF_BROWSE_NOT_TRIED) == RF_DISC_STEP_BROWSE);
+    EXPECT(rf_discover_next(0, 0, RF_BROWSE_EMPTY) == RF_DISC_STEP_COMPILED);
+    EXPECT(rf_discover_next(0, 0, RF_BROWSE_FOUND) == RF_DISC_STEP_DISCOVERED);
+    EXPECT(rf_discover_next(1, 0, RF_BROWSE_NOT_TRIED) == RF_DISC_STEP_NVS);
+    EXPECT(rf_discover_next(0, 0, RF_BROWSE_CONNECT_FAILED) == RF_DISC_STEP_COMPILED);
+}
+
 int main(void) {
     test_frames();
     test_face();
     test_talk();
+    test_discover();
     if (g_failed) {
         fprintf(stderr, "%d assertion(s) failed\n", g_failed);
         return 1;

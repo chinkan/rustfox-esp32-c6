@@ -11,6 +11,7 @@ With a Wi-Fi network and a device token, the board opens the Device WebSocket on
 ## Features
 
 - Wi-Fi station mode.
+- LAN DNS-SD browse of `_rustfox-device._tcp`, with the last good `ws://` URI kept in NVS. The menu URI is the fallback.
 - JSON text frames on `GET /api/device/v1/ws`.
 - Device token in an `Authorization: Bearer` header, or in a first `auth` text frame.
 - `device_hello`, `user_text`, JSON `ping`, and `assistant_text`.
@@ -19,7 +20,7 @@ With a Wi-Fi network and a device token, the board opens the Device WebSocket on
 - QSPI AMOLED bring-up through the AXP2101 power-management chip.
 - Touch on the shared I2C bus. The firmware probes CST9220 and CST9217 and uses whichever answers.
 - Press-and-hold to talk. ES7210 capture and ES8311 playback on I2S. The clip is written to a flash partition, uploaded as one WAV, and the PCM reply is streamed to the speaker.
-- Host tests for the JSON frames, the fox face, and the press-and-hold timing (`make -C tests/host test`).
+- Host tests for the JSON frames, the fox face, press-and-hold timing, and DNS-SD URI selection (`make -C tests/host test`).
 
 ## Hardware
 
@@ -89,7 +90,9 @@ Menu path: **RustFox ESP32-C6**.
 | Setting | Role |
 | --- | --- |
 | Wi-Fi SSID / password | Station join. An empty SSID boots the face and skips the network. An empty password joins an open network. |
-| Device WebSocket URI | Full URI, including `/api/device/v1/ws`. Default `ws://192.168.1.10:8080/api/device/v1/ws`. |
+| Device WebSocket URI | Fallback URI, including `/api/device/v1/ws`. Default `ws://192.168.1.10:8080/api/device/v1/ws`. Not stored as the last-good address. |
+| DNS-SD browse | On by default. Browses `_rustfox-device._tcp`. Preferred instance defaults to `rustfox`. |
+| DNS-SD timeout | Default 2500 ms. |
 | Device token transport | `Authorization: Bearer` (default) or a first text frame `{"type":"auth","token":"..."}`. |
 | Device token | Plaintext from portal **Settings → Devices**. This is the device token, not the portal login token. An empty token skips the socket. |
 | device_id / room | Optional `device_hello` fields. Defaults: `esp32-c6-amoled-2.16` and an empty room. |
@@ -105,7 +108,7 @@ Menu path: **RustFox ESP32-C6**.
 
 `sdkconfig` holds the SSID, the password, and the device token. `.gitignore` lists `sdkconfig` and `sdkconfig.old`. Do not commit them. The log records the token length and leaves the token itself out.
 
-Put your RustFox host in the URI and keep the path `/api/device/v1/ws`. The default host `192.168.1.10` and port `8080` are only a starting point.
+The board tries a last-good URI saved in NVS, then browses `_rustfox-device._tcp` on the LAN, then the compiled URI. A discovered socket is `ws://<ipv4>:<port>/api/device/v1/ws`. Loopback, APIPA, and Tailscale `100.x` addresses are ignored. A `172.x` LAN address is used. A device token is never taken from mDNS. After that socket connects, the URI is saved. The next connect tries the saved URI first and browses again only if that connect fails. The default host `192.168.1.10` and port `8080` stay only as the compiled fallback.
 
 ### Build, flash, and monitor
 
@@ -130,7 +133,7 @@ A line longer than 383 bytes is dropped. If a typed line is already waiting when
 make -C tests/host test
 ```
 
-The tests compile `components/rf_frames`, `components/rf_face`, and `components/rf_talk` on the host. GitHub Actions runs the same command on every push and pull request.
+The tests compile `components/rf_frames`, `components/rf_face`, `components/rf_talk`, and `components/rf_discover` on the host. GitHub Actions runs the same command on every push and pull request.
 
 ## Protocol
 
@@ -190,7 +193,8 @@ The MIT widget [0015/lvgl_kawaii_face](https://github.com/0015/lvgl_kawaii_face)
 - The microphone and speaker are the ES7210 and ES8311 on the I2S pins in `main/board_pins.h`. Capture is 16 kHz mono, streamed into the `audio` flash partition. Playback is 16 kHz mono PCM. This firmware does not run a wake-word model.
 - Display updates are 16-line stripes. The fox is drawn to fill the 480×480 panel. A full-panel framebuffer is not allocated.
 - Incoming text frames larger than 8 KiB are dropped. The log and the face keep 1023 bytes of `text`. RustFox accepts a frame up to 256 KiB and a `user_text` of up to 16000 Unicode scalars. A monitor line longer than 383 bytes is dropped.
-- This client sends JSON text frames on the Device WebSocket. It ignores binary frames. Audio upload and download use HTTP on the same host and port as that socket.
+- This client sends JSON text frames on the Device WebSocket. It ignores binary frames. Audio upload and download use HTTP on the same host and port as the Device WebSocket URI that was chosen.
+- DNS-SD does not use an advertised loopback, APIPA, or `100.x` address, and it does not read a device token from TXT. A `172.x` address, including `172.16.0.0/12`, is eligible. The serial log prints free heap when mDNS starts and when a browse finishes. Host tests do not measure that heap.
 
 ## License
 
@@ -204,5 +208,6 @@ The ESP-IDF component manager downloads these at build time from `main/idf_compo
 
 - `espressif/esp_websocket_client` 1.8.0 (Apache-2.0)
 - `espressif/esp_lcd_sh8601` 2.0.1 (Apache-2.0)
+- `espressif/mdns` 1.8.2 (Apache-2.0)
 
 ESP-IDF itself is Apache-2.0 and is not vendored. Waveshare's own SDK samples are not copied: those trees do not ship an SPDX header.

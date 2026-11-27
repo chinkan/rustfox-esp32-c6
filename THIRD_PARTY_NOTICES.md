@@ -34,6 +34,7 @@ Not vendored. The IDF component manager downloads them from
 - `espressif/esp_websocket_client` 1.8.0 — Apache-2.0
 - `espressif/esp_lcd_sh8601` 2.0.1 — Apache-2.0
 - `espressif/esp_codec_dev` 1.6.2 — Apache-2.0 (ES7210 and ES8311)
+- `espressif/mdns` 1.8.2 — Apache-2.0
 
 ESP-IDF itself is Apache-2.0 and is not vendored.
 

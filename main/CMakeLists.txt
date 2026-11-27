@@ -5,6 +5,7 @@ idf_component_register(
         "board_panel.c"
         "wifi_sta.c"
         "device_link.c"
+        "lan_discover.c"
         "board_touch.c"
         "board_audio.c"
         "talk_session.c"
@@ -26,4 +27,6 @@ idf_component_register(
         rf_frames
         rf_face
         rf_talk
+        rf_discover
+        mdns
 )
