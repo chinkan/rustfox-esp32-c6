@@ -10,7 +10,17 @@
 // The Waveshare product page names the glass controller CO5300. That MIT
 // board file drives it with the SH8601 QSPI command set. The upstream
 // 0x2A/0x2B window is 410x502 (the 2.06" geometry). This file programs
-// 0x0000..0x01DF for the published 480x480 panel. Confirm on the bench.
+// 0x0000..0x01DF for the published 480x480 panel. MADCTL 0x36 stays 0xA0.
+//
+// QSPI RGB565 is high byte first. espressif/esp_lcd_sh8601 2.0.1 passes the
+// stripe pointer through esp_lcd_panel_io_tx_color and ignores data_endian.
+// panel_io_spi_tx_color (ESP-IDF 5.5.1) queues a DMA read of that pointer
+// and returns; it does not copy the color buffer and it does not swap bytes.
+// s_stripe is HP SRAM: DMA-capable, and ESP32-C6 does not cache it through
+// L1, so the engine reads those addresses in memory order. The CPU stores
+// RGB565 little-endian. The blit swaps each pixel, then waits until
+// on_color_trans_done. The next stripe render would otherwise overwrite
+// s_stripe while that DMA read is still in flight.
 
 #include "board_panel.h"
 
@@ -19,10 +29,12 @@
 #include "driver/i2c_master.h"
 #include "driver/spi_master.h"
 #include "esp_lcd_io_spi.h"
+#include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_sh8601.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include <string.h>
@@ -64,6 +76,7 @@ static const sh8601_lcd_init_cmd_t k_init[] = {
 #define STRIPE_ROWS 16
 
 static uint16_t s_stripe[BOARD_LCD_H_RES * STRIPE_ROWS];
+static SemaphoreHandle_t s_color_done;
 
 static esp_err_t axp_write(uint8_t reg, uint8_t val) {
     uint8_t buf[2] = {reg, val};
@@ -169,6 +182,38 @@ static esp_err_t panel_power_cycle(void) {
     return ESP_OK;
 }
 
+static bool panel_color_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *edata,
+                            void *user_ctx) {
+    (void)io;
+    (void)edata;
+    (void)user_ctx;
+    BaseType_t wake = pdFALSE;
+    xSemaphoreGiveFromISR(s_color_done, &wake);
+    return wake == pdTRUE;
+}
+
+/* High byte at the low address. DMA then reads that order. */
+static void stripe_swap_rgb565(int pixels) {
+    for (int i = 0; i < pixels; i++) {
+        uint16_t color = s_stripe[i];
+        s_stripe[i] = (uint16_t)((color << 8) | (color >> 8));
+    }
+}
+
+static esp_err_t blit_stripe(int y, int rows) {
+    stripe_swap_rgb565(BOARD_LCD_H_RES * rows);
+    esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, BOARD_LCD_H_RES, y + rows, s_stripe);
+    if (err != ESP_OK) {
+        return err;
+    }
+    /* spi_post_trans gives this after the DMA transaction completes.
+     * The driver's next CASET also waits, but only after the next render. */
+    if (xSemaphoreTake(s_color_done, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
+}
+
 static esp_err_t clear_panel(void) {
     memset(s_stripe, 0, sizeof(s_stripe));
     for (int y = 0; y < BOARD_LCD_V_RES; y += STRIPE_ROWS) {
@@ -176,7 +221,7 @@ static esp_err_t clear_panel(void) {
         if (y + rows > BOARD_LCD_V_RES) {
             rows = BOARD_LCD_V_RES - y;
         }
-        esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, BOARD_LCD_H_RES, y + rows, s_stripe);
+        esp_err_t err = blit_stripe(y, rows);
         if (err != ESP_OK) {
             return err;
         }
@@ -246,8 +291,16 @@ esp_err_t board_panel_init(void) {
         return err;
     }
 
+    if (!s_color_done) {
+        s_color_done = xSemaphoreCreateBinary();
+        if (!s_color_done) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
     esp_lcd_panel_io_handle_t io = NULL;
-    const esp_lcd_panel_io_spi_config_t io_cfg = SH8601_PANEL_IO_QSPI_CONFIG(BOARD_LCD_CS, NULL, NULL);
+    const esp_lcd_panel_io_spi_config_t io_cfg =
+        SH8601_PANEL_IO_QSPI_CONFIG(BOARD_LCD_CS, panel_color_done, NULL);
     err = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &io_cfg, &io);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "panel io failed: %s", esp_err_to_name(err));
@@ -308,7 +361,7 @@ void board_panel_draw(const rf_face_t *face) {
         if (rf_face_render_stripe(face, s_stripe, BOARD_LCD_H_RES, y, rows, BOARD_LCD_V_RES) != 0) {
             return;
         }
-        esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel, 0, y, BOARD_LCD_H_RES, y + rows, s_stripe);
+        esp_err_t err = blit_stripe(y, rows);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "blit failed: %s", esp_err_to_name(err));
             return;

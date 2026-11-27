@@ -45,7 +45,7 @@ The pin map, the AXP2101 sequence that powers the panel, and the QSPI init comma
 
 **Controller names.** The Waveshare product page calls the glass CO5300 and the touch chip CST9220. This firmware initializes the panel with the SH8601 QSPI command set from `espressif/esp_lcd_sh8601` (Apache-2.0), the same command set as the Xiaozhi board file. That board file names the touch chip CST9217. Both parts use I2C `0x5A`. At boot the firmware reads the chip id and keeps the part that answers.
 
-**Address window.** Column and page commands `0x2A` and `0x2B` are programmed as `0x0000`–`0x01DF` on both axes (480 pixels). Command `0x36` (MADCTL) is `0xA0`. The panel config uses RGB element order. The Xiaozhi init table this sequence comes from programs a 410×502 window (2.06-inch geometry) while its `config.h` names 480×480. This firmware uses the 480×480 window.
+**Address window.** Column and page commands `0x2A` and `0x2B` are programmed as `0x0000`–`0x01DF` on both axes (480 pixels). Command `0x36` (MADCTL) is `0xA0`. The stripe blit swaps RGB565 so the high byte is first on the wire, then waits until the QSPI DMA read of that stripe has finished. `esp_lcd_sh8601` 2.0.1 ignores `data_endian` and `esp_lcd_panel_draw_bitmap` returns while that read is still in flight. The panel config uses RGB element order. The Xiaozhi init table this sequence comes from programs a 410×502 window (2.06-inch geometry) while its `config.h` names 480×480. This firmware uses the 480×480 window.
 
 **Panel power.** The glass is powered by toggling AXP2101 ALDO3 at I2C `0x34`, using the same sequence as the Xiaozhi board file. If `0x34` does not acknowledge, panel setup stops and the WebSocket client still runs.
 
